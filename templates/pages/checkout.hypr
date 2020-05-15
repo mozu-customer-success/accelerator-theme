@@ -1,4 +1,4 @@
-﻿{% extends "page" %}
+﻿    {% extends "page" %}
 
 {% block title-tag-content %}{% firstof pageContext.metaTitle labels.checkout %} - {% parent %}{% endblock title-tag-content %}
 
@@ -9,9 +9,11 @@
 {% endif %}
 {% endblock head-tag-scripts %}
 
-{% block body-tag-classes %} mz-checkout {% endblock body-tag-classes %}
+{% block body-tag-classes %}mz-checkout{% endblock body-tag-classes %}
 
 {% block site-nav %}{% endblock site-nav %}
+{% block secondary-nav %}{% endblock secondary-nav %}
+{% block page-footer %}{% endblock page-footer%}
 
 {% block body-content %}
 
@@ -22,12 +24,14 @@
 <div class="mz-l-container">
     <h1 class="mz-pagetitle">
         {{ labels.checkout }}
-        {% if not user.isAuthenticated %}
-        <span class="mz-pagetitle-note">
-            {{ labels.registeredCustomer }} <a data-mz-action="login" data-placement="left" href="javascript;">{{ labels.logIn }}</a>
-        </span>
-        {% endif %}
     </h1>
+     {% if not user.isAuthenticated %}
+         <a data-toggle="modal" data-mz-action="lite-registration" class="mz-pagetitle-note">
+            <span>
+                {{ labels.registeredCustomer }} {{ labels.logIn }}
+            </span>
+        </a>
+    {% endif %}
 
     <div id="mz-discount-threshold-messages">
         {% include "modules/checkout/checkout-discount-threshold-messages" with model=model %}
@@ -72,7 +76,7 @@
             </div>
 
         </div><!-- left .column -->
-        <div id="AmazonPayButton" style="display:none;"/>
+        <div id="AmazonPayButton" style="display:none;"></div>
     </form>
 </div>
 

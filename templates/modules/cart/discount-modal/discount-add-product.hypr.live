@@ -12,7 +12,7 @@
              {% if model.content.productShortDescription and themeSettings.showProductDetailShortDesc %}
             <div class="mz-productdetail-shortdesc mz-l-stack-section">
                 <h4 class="mz-l-stack-sectiontitle">{{ labels.shortDesc }}</h4>
-                <span itemscope="description">{{ model.content.productShortDescription|safe }}</span>
+                <span itemprop="description" itemscope>{{ model.content.productShortDescription|safe }}</span>
             </div>
             {% endif %} {% if model.options and model.options.length > 0 %}
             <div class="mz-productdetail-options mz-l-stack-section">
@@ -40,7 +40,7 @@
             
                 <section class="mz-l-stack-section mz-productdetail-conversion">
                     <div class="mz-productdetail-conversion-buttons">
-                        <button id="add-to-cart" class="mz-productdetail-addtocart mz-button mz-button-large {% if not model.isPurchasable %}is-disabled{% endif %}"
+                        <button id="add-to-cart" class="mz-productdetail-addtocart mz-button mz-button-large{% if not model.isPurchasable %} is-disabled{% endif %}"
                             {% if not model.isPurchasable %} disabled="disabled" {% endif %} data-mz-action="addToCart">
                             {{ labels.addToCart }}
                         </button>

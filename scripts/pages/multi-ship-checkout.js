@@ -206,8 +206,8 @@ require(["modules/jquery-mozu",
         var checkoutModel = window.order = new CheckoutModels(checkoutData),
             checkoutViews = {
                 parentView: new ParentView({
-                  el: $checkoutView,
-                  model: checkoutModel
+                    el: $checkoutView,
+                    model: checkoutModel
                 }),
                 steps: {
                     shippingAddress: new ShippingDestinationsView({

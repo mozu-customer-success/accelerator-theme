@@ -30,9 +30,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return api;
 });
 
-//     Underscore.js 1.8.3
+//     Underscore.js 1.9.1
 //     http://underscorejs.org
-//     (c) 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+//     (c) 2009-2018 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
 //     Underscore may be freely distributed under the MIT license.
 
 (function() {
@@ -40,29 +40,32 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Baseline setup
   // --------------
 
-  // Establish the root object, `window` in the browser, or `exports` on the server.
-  var root = this;
+  // Establish the root object, `window` (`self`) in the browser, `global`
+  // on the server, or `this` in some virtual machines. We use `self`
+  // instead of `window` for `WebWorker` support.
+  var root = typeof self == 'object' && self.self === self && self ||
+            typeof global == 'object' && global.global === global && global ||
+            this ||
+            {};
 
   // Save the previous value of the `_` variable.
   var previousUnderscore = root._;
 
   // Save bytes in the minified (but not gzipped) version:
-  var ArrayProto = Array.prototype, ObjProto = Object.prototype, FuncProto = Function.prototype;
+  var ArrayProto = Array.prototype, ObjProto = Object.prototype;
+  var SymbolProto = typeof Symbol !== 'undefined' ? Symbol.prototype : null;
 
   // Create quick reference variables for speed access to core prototypes.
-  var
-    push             = ArrayProto.push,
-    slice            = ArrayProto.slice,
-    toString         = ObjProto.toString,
-    hasOwnProperty   = ObjProto.hasOwnProperty;
+  var push = ArrayProto.push,
+      slice = ArrayProto.slice,
+      toString = ObjProto.toString,
+      hasOwnProperty = ObjProto.hasOwnProperty;
 
   // All **ECMAScript 5** native function implementations that we hope to use
   // are declared here.
-  var
-    nativeIsArray      = Array.isArray,
-    nativeKeys         = Object.keys,
-    nativeBind         = FuncProto.bind,
-    nativeCreate       = Object.create;
+  var nativeIsArray = Array.isArray,
+      nativeKeys = Object.keys,
+      nativeCreate = Object.create;
 
   // Naked function reference for surrogate-prototype-swapping.
   var Ctor = function(){};
@@ -75,10 +78,12 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // Export the Underscore object for **Node.js**, with
-  // backwards-compatibility for the old `require()` API. If we're in
+  // backwards-compatibility for their old module API. If we're in
   // the browser, add `_` as a global object.
-  if (typeof exports !== 'undefined') {
-    if (typeof module !== 'undefined' && module.exports) {
+  // (`nodeType` is checked to ensure that `module`
+  // and `exports` are not HTML elements.)
+  if (typeof exports != 'undefined' && !exports.nodeType) {
+    if (typeof module != 'undefined' && !module.nodeType && module.exports) {
       exports = module.exports = _;
     }
     exports._ = _;
@@ -87,7 +92,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   }
 
   // Current version.
-  _.VERSION = '1.8.3';
+  _.VERSION = '1.9.1';
 
   // Internal function that returns an efficient (for current engines) version
   // of the passed-in callback, to be repeatedly applied in other Underscore
@@ -98,9 +103,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       case 1: return function(value) {
         return func.call(context, value);
       };
-      case 2: return function(value, other) {
-        return func.call(context, value, other);
-      };
+      // The 2-argument case is omitted because we’re not using it.
       case 3: return function(value, index, collection) {
         return func.call(context, value, index, collection);
       };
@@ -113,34 +116,51 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     };
   };
 
-  // A mostly-internal function to generate callbacks that can be applied
-  // to each element in a collection, returning the desired result — either
-  // identity, an arbitrary callback, a property matcher, or a property accessor.
+  var builtinIteratee;
+
+  // An internal function to generate callbacks that can be applied to each
+  // element in a collection, returning the desired result — either `identity`,
+  // an arbitrary callback, a property matcher, or a property accessor.
   var cb = function(value, context, argCount) {
+    if (_.iteratee !== builtinIteratee) return _.iteratee(value, context);
     if (value == null) return _.identity;
     if (_.isFunction(value)) return optimizeCb(value, context, argCount);
-    if (_.isObject(value)) return _.matcher(value);
+    if (_.isObject(value) && !_.isArray(value)) return _.matcher(value);
     return _.property(value);
   };
-  _.iteratee = function(value, context) {
+
+  // External wrapper for our callback generator. Users may customize
+  // `_.iteratee` if they want additional predicate/iteratee shorthand styles.
+  // This abstraction hides the internal-only argCount argument.
+  _.iteratee = builtinIteratee = function(value, context) {
     return cb(value, context, Infinity);
   };
 
-  // An internal function for creating assigner functions.
-  var createAssigner = function(keysFunc, undefinedOnly) {
-    return function(obj) {
-      var length = arguments.length;
-      if (length < 2 || obj == null) return obj;
-      for (var index = 1; index < length; index++) {
-        var source = arguments[index],
-            keys = keysFunc(source),
-            l = keys.length;
-        for (var i = 0; i < l; i++) {
-          var key = keys[i];
-          if (!undefinedOnly || obj[key] === void 0) obj[key] = source[key];
-        }
+  // Some functions take a variable number of arguments, or a few expected
+  // arguments at the beginning and then a variable number of values to operate
+  // on. This helper accumulates all remaining arguments past the function’s
+  // argument length (or an explicit `startIndex`), into an array that becomes
+  // the last argument. Similar to ES6’s "rest parameter".
+  var restArguments = function(func, startIndex) {
+    startIndex = startIndex == null ? func.length - 1 : +startIndex;
+    return function() {
+      var length = Math.max(arguments.length - startIndex, 0),
+          rest = Array(length),
+          index = 0;
+      for (; index < length; index++) {
+        rest[index] = arguments[index + startIndex];
       }
-      return obj;
+      switch (startIndex) {
+        case 0: return func.call(this, rest);
+        case 1: return func.call(this, arguments[0], rest);
+        case 2: return func.call(this, arguments[0], arguments[1], rest);
+      }
+      var args = Array(startIndex + 1);
+      for (index = 0; index < startIndex; index++) {
+        args[index] = arguments[index];
+      }
+      args[startIndex] = rest;
+      return func.apply(this, args);
     };
   };
 
@@ -154,18 +174,31 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return result;
   };
 
-  var property = function(key) {
+  var shallowProperty = function(key) {
     return function(obj) {
       return obj == null ? void 0 : obj[key];
     };
   };
 
+  var has = function(obj, path) {
+    return obj != null && hasOwnProperty.call(obj, path);
+  }
+
+  var deepGet = function(obj, path) {
+    var length = path.length;
+    for (var i = 0; i < length; i++) {
+      if (obj == null) return void 0;
+      obj = obj[path[i]];
+    }
+    return length ? obj : void 0;
+  };
+
   // Helper for collection methods to determine whether a collection
-  // should be iterated as an array or as an object
+  // should be iterated as an array or as an object.
   // Related: http://people.mozilla.org/~jorendorff/es6-draft.html#sec-tolength
   // Avoids a very nasty iOS 8 JIT bug on ARM-64. #2094
   var MAX_ARRAY_INDEX = Math.pow(2, 53) - 1;
-  var getLength = property('length');
+  var getLength = shallowProperty('length');
   var isArrayLike = function(collection) {
     var length = getLength(collection);
     return typeof length == 'number' && length >= 0 && length <= MAX_ARRAY_INDEX;
@@ -207,30 +240,29 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // Create a reducing function iterating left or right.
-  function createReduce(dir) {
-    // Optimized iterator function as using arguments.length
-    // in the main function will deoptimize the, see #1991.
-    function iterator(obj, iteratee, memo, keys, index, length) {
+  var createReduce = function(dir) {
+    // Wrap code that reassigns argument variables in a separate function than
+    // the one that accesses `arguments.length` to avoid a perf hit. (#1991)
+    var reducer = function(obj, iteratee, memo, initial) {
+      var keys = !isArrayLike(obj) && _.keys(obj),
+          length = (keys || obj).length,
+          index = dir > 0 ? 0 : length - 1;
+      if (!initial) {
+        memo = obj[keys ? keys[index] : index];
+        index += dir;
+      }
       for (; index >= 0 && index < length; index += dir) {
         var currentKey = keys ? keys[index] : index;
         memo = iteratee(memo, obj[currentKey], currentKey, obj);
       }
       return memo;
-    }
+    };
 
     return function(obj, iteratee, memo, context) {
-      iteratee = optimizeCb(iteratee, context, 4);
-      var keys = !isArrayLike(obj) && _.keys(obj),
-          length = (keys || obj).length,
-          index = dir > 0 ? 0 : length - 1;
-      // Determine the initial value if none is provided.
-      if (arguments.length < 3) {
-        memo = obj[keys ? keys[index] : index];
-        index += dir;
-      }
-      return iterator(obj, iteratee, memo, keys, index, length);
+      var initial = arguments.length >= 3;
+      return reducer(obj, optimizeCb(iteratee, context, 4), memo, initial);
     };
-  }
+  };
 
   // **Reduce** builds up a single result from a list of values, aka `inject`,
   // or `foldl`.
@@ -241,12 +273,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Return the first value which passes a truth test. Aliased as `detect`.
   _.find = _.detect = function(obj, predicate, context) {
-    var key;
-    if (isArrayLike(obj)) {
-      key = _.findIndex(obj, predicate, context);
-    } else {
-      key = _.findKey(obj, predicate, context);
-    }
+    var keyFinder = isArrayLike(obj) ? _.findIndex : _.findKey;
+    var key = keyFinder(obj, predicate, context);
     if (key !== void 0 && key !== -1) return obj[key];
   };
 
@@ -301,14 +329,26 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // Invoke a method (with arguments) on every item in a collection.
-  _.invoke = function(obj, method) {
-    var args = slice.call(arguments, 2);
-    var isFunc = _.isFunction(method);
-    return _.map(obj, function(value) {
-      var func = isFunc ? method : value[method];
-      return func == null ? func : func.apply(value, args);
+  _.invoke = restArguments(function(obj, path, args) {
+    var contextPath, func;
+    if (_.isFunction(path)) {
+      func = path;
+    } else if (_.isArray(path)) {
+      contextPath = path.slice(0, -1);
+      path = path[path.length - 1];
+    }
+    return _.map(obj, function(context) {
+      var method = func;
+      if (!method) {
+        if (contextPath && contextPath.length) {
+          context = deepGet(context, contextPath);
+        }
+        if (context == null) return void 0;
+        method = context[path];
+      }
+      return method == null ? method : method.apply(context, args);
     });
-  };
+  });
 
   // Convenience version of a common use case of `map`: fetching a property.
   _.pluck = function(obj, key) {
@@ -331,20 +371,20 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   _.max = function(obj, iteratee, context) {
     var result = -Infinity, lastComputed = -Infinity,
         value, computed;
-    if (iteratee == null && obj != null) {
+    if (iteratee == null || typeof iteratee == 'number' && typeof obj[0] != 'object' && obj != null) {
       obj = isArrayLike(obj) ? obj : _.values(obj);
       for (var i = 0, length = obj.length; i < length; i++) {
         value = obj[i];
-        if (value > result) {
+        if (value != null && value > result) {
           result = value;
         }
       }
     } else {
       iteratee = cb(iteratee, context);
-      _.each(obj, function(value, index, list) {
-        computed = iteratee(value, index, list);
+      _.each(obj, function(v, index, list) {
+        computed = iteratee(v, index, list);
         if (computed > lastComputed || computed === -Infinity && result === -Infinity) {
-          result = value;
+          result = v;
           lastComputed = computed;
         }
       });
@@ -356,20 +396,20 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   _.min = function(obj, iteratee, context) {
     var result = Infinity, lastComputed = Infinity,
         value, computed;
-    if (iteratee == null && obj != null) {
+    if (iteratee == null || typeof iteratee == 'number' && typeof obj[0] != 'object' && obj != null) {
       obj = isArrayLike(obj) ? obj : _.values(obj);
       for (var i = 0, length = obj.length; i < length; i++) {
         value = obj[i];
-        if (value < result) {
+        if (value != null && value < result) {
           result = value;
         }
       }
     } else {
       iteratee = cb(iteratee, context);
-      _.each(obj, function(value, index, list) {
-        computed = iteratee(value, index, list);
+      _.each(obj, function(v, index, list) {
+        computed = iteratee(v, index, list);
         if (computed < lastComputed || computed === Infinity && result === Infinity) {
-          result = value;
+          result = v;
           lastComputed = computed;
         }
       });
@@ -377,21 +417,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return result;
   };
 
-  // Shuffle a collection, using the modern version of the
-  // [Fisher-Yates shuffle](http://en.wikipedia.org/wiki/Fisher–Yates_shuffle).
+  // Shuffle a collection.
   _.shuffle = function(obj) {
-    var set = isArrayLike(obj) ? obj : _.values(obj);
-    var length = set.length;
-    var shuffled = Array(length);
-    for (var index = 0, rand; index < length; index++) {
-      rand = _.random(0, index);
-      if (rand !== index) shuffled[index] = shuffled[rand];
-      shuffled[rand] = set[index];
-    }
-    return shuffled;
+    return _.sample(obj, Infinity);
   };
 
-  // Sample **n** random values from a collection.
+  // Sample **n** random values from a collection using the modern version of the
+  // [Fisher-Yates shuffle](http://en.wikipedia.org/wiki/Fisher–Yates_shuffle).
   // If **n** is not specified, returns a single random element.
   // The internal `guard` argument allows it to work with `map`.
   _.sample = function(obj, n, guard) {
@@ -399,17 +431,28 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       if (!isArrayLike(obj)) obj = _.values(obj);
       return obj[_.random(obj.length - 1)];
     }
-    return _.shuffle(obj).slice(0, Math.max(0, n));
+    var sample = isArrayLike(obj) ? _.clone(obj) : _.values(obj);
+    var length = getLength(sample);
+    n = Math.max(Math.min(n, length), 0);
+    var last = length - 1;
+    for (var index = 0; index < n; index++) {
+      var rand = _.random(index, last);
+      var temp = sample[index];
+      sample[index] = sample[rand];
+      sample[rand] = temp;
+    }
+    return sample.slice(0, n);
   };
 
   // Sort the object's values by a criterion produced by an iteratee.
   _.sortBy = function(obj, iteratee, context) {
+    var index = 0;
     iteratee = cb(iteratee, context);
-    return _.pluck(_.map(obj, function(value, index, list) {
+    return _.pluck(_.map(obj, function(value, key, list) {
       return {
         value: value,
-        index: index,
-        criteria: iteratee(value, index, list)
+        index: index++,
+        criteria: iteratee(value, key, list)
       };
     }).sort(function(left, right) {
       var a = left.criteria;
@@ -423,9 +466,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // An internal function used for aggregate "group by" operations.
-  var group = function(behavior) {
+  var group = function(behavior, partition) {
     return function(obj, iteratee, context) {
-      var result = {};
+      var result = partition ? [[], []] : {};
       iteratee = cb(iteratee, context);
       _.each(obj, function(value, index) {
         var key = iteratee(value, index, obj);
@@ -438,7 +481,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Groups the object's values by a criterion. Pass either a string attribute
   // to group by, or a function that returns the criterion.
   _.groupBy = group(function(result, value, key) {
-    if (_.has(result, key)) result[key].push(value); else result[key] = [value];
+    if (has(result, key)) result[key].push(value); else result[key] = [value];
   });
 
   // Indexes the object's values by a criterion, similar to `groupBy`, but for
@@ -451,13 +494,18 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // either a string attribute to count by, or a function that returns the
   // criterion.
   _.countBy = group(function(result, value, key) {
-    if (_.has(result, key)) result[key]++; else result[key] = 1;
+    if (has(result, key)) result[key]++; else result[key] = 1;
   });
 
+  var reStrSymbol = /[^\ud800-\udfff]|[\ud800-\udbff][\udc00-\udfff]|[\ud800-\udfff]/g;
   // Safely create a real, live array from anything iterable.
   _.toArray = function(obj) {
     if (!obj) return [];
     if (_.isArray(obj)) return slice.call(obj);
+    if (_.isString(obj)) {
+      // Keep surrogate pair characters together
+      return obj.match(reStrSymbol);
+    }
     if (isArrayLike(obj)) return _.map(obj, _.identity);
     return _.values(obj);
   };
@@ -470,14 +518,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Split a collection into two arrays: one whose elements all satisfy the given
   // predicate, and one whose elements all do not satisfy the predicate.
-  _.partition = function(obj, predicate, context) {
-    predicate = cb(predicate, context);
-    var pass = [], fail = [];
-    _.each(obj, function(value, key, obj) {
-      (predicate(value, key, obj) ? pass : fail).push(value);
-    });
-    return [pass, fail];
-  };
+  _.partition = group(function(result, value, pass) {
+    result[pass ? 0 : 1].push(value);
+  }, true);
 
   // Array Functions
   // ---------------
@@ -486,7 +529,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // values in the array. Aliased as `head` and `take`. The **guard** check
   // allows it to work with `_.map`.
   _.first = _.head = _.take = function(array, n, guard) {
-    if (array == null) return void 0;
+    if (array == null || array.length < 1) return n == null ? void 0 : [];
     if (n == null || guard) return array[0];
     return _.initial(array, array.length - n);
   };
@@ -501,7 +544,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Get the last element of an array. Passing **n** will return the last N
   // values in the array.
   _.last = function(array, n, guard) {
-    if (array == null) return void 0;
+    if (array == null || array.length < 1) return n == null ? void 0 : [];
     if (n == null || guard) return array[array.length - 1];
     return _.rest(array, Math.max(0, array.length - n));
   };
@@ -515,21 +558,23 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Trim out all falsy values from an array.
   _.compact = function(array) {
-    return _.filter(array, _.identity);
+    return _.filter(array, Boolean);
   };
 
   // Internal implementation of a recursive `flatten` function.
-  var flatten = function(input, shallow, strict, startIndex) {
-    var output = [], idx = 0;
-    for (var i = startIndex || 0, length = getLength(input); i < length; i++) {
+  var flatten = function(input, shallow, strict, output) {
+    output = output || [];
+    var idx = output.length;
+    for (var i = 0, length = getLength(input); i < length; i++) {
       var value = input[i];
       if (isArrayLike(value) && (_.isArray(value) || _.isArguments(value))) {
-        //flatten current level of array or arguments object
-        if (!shallow) value = flatten(value, shallow, strict);
-        var j = 0, len = value.length;
-        output.length += len;
-        while (j < len) {
-          output[idx++] = value[j++];
+        // Flatten current level of array or arguments object.
+        if (shallow) {
+          var j = 0, len = value.length;
+          while (j < len) output[idx++] = value[j++];
+        } else {
+          flatten(value, shallow, strict, output);
+          idx = output.length;
         }
       } else if (!strict) {
         output[idx++] = value;
@@ -544,12 +589,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // Return a version of the array that does not contain the specified value(s).
-  _.without = function(array) {
-    return _.difference(array, slice.call(arguments, 1));
-  };
+  _.without = restArguments(function(array, otherArrays) {
+    return _.difference(array, otherArrays);
+  });
 
   // Produce a duplicate-free version of the array. If the array has already
   // been sorted, you have the option of using a faster algorithm.
+  // The faster algorithm will not work with an iteratee if the iteratee
+  // is not a one-to-one function, so providing an iteratee will disable
+  // the faster algorithm.
   // Aliased as `unique`.
   _.uniq = _.unique = function(array, isSorted, iteratee, context) {
     if (!_.isBoolean(isSorted)) {
@@ -563,7 +611,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     for (var i = 0, length = getLength(array); i < length; i++) {
       var value = array[i],
           computed = iteratee ? iteratee(value, i, array) : value;
-      if (isSorted) {
+      if (isSorted && !iteratee) {
         if (!i || seen !== computed) result.push(value);
         seen = computed;
       } else if (iteratee) {
@@ -580,9 +628,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Produce an array that contains the union: each distinct element from all of
   // the passed-in arrays.
-  _.union = function() {
-    return _.uniq(flatten(arguments, true, true));
-  };
+  _.union = restArguments(function(arrays) {
+    return _.uniq(flatten(arrays, true, true));
+  });
 
   // Produce an array that contains every item shared between all the
   // passed-in arrays.
@@ -592,7 +640,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     for (var i = 0, length = getLength(array); i < length; i++) {
       var item = array[i];
       if (_.contains(result, item)) continue;
-      for (var j = 1; j < argsLength; j++) {
+      var j;
+      for (j = 1; j < argsLength; j++) {
         if (!_.contains(arguments[j], item)) break;
       }
       if (j === argsLength) result.push(item);
@@ -602,21 +651,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Take the difference between one array and a number of other arrays.
   // Only the elements present in just the first array will remain.
-  _.difference = function(array) {
-    var rest = flatten(arguments, true, true, 1);
+  _.difference = restArguments(function(array, rest) {
+    rest = flatten(rest, true, true);
     return _.filter(array, function(value){
       return !_.contains(rest, value);
     });
-  };
-
-  // Zip together multiple lists into a single array -- elements that share
-  // an index go together.
-  _.zip = function() {
-    return _.unzip(arguments);
-  };
+  });
 
   // Complement of _.zip. Unzip accepts an array of arrays and groups
-  // each array's elements on shared indices
+  // each array's elements on shared indices.
   _.unzip = function(array) {
     var length = array && _.max(array, getLength).length || 0;
     var result = Array(length);
@@ -627,9 +670,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return result;
   };
 
+  // Zip together multiple lists into a single array -- elements that share
+  // an index go together.
+  _.zip = restArguments(_.unzip);
+
   // Converts lists into objects. Pass either a single array of `[key, value]`
   // pairs, or two parallel arrays of the same length -- one of keys, and one of
-  // the corresponding values.
+  // the corresponding values. Passing by pairs is the reverse of _.pairs.
   _.object = function(list, values) {
     var result = {};
     for (var i = 0, length = getLength(list); i < length; i++) {
@@ -642,8 +689,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return result;
   };
 
-  // Generator function to create the findIndex and findLastIndex functions
-  function createPredicateIndexFinder(dir) {
+  // Generator function to create the findIndex and findLastIndex functions.
+  var createPredicateIndexFinder = function(dir) {
     return function(array, predicate, context) {
       predicate = cb(predicate, context);
       var length = getLength(array);
@@ -653,9 +700,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       }
       return -1;
     };
-  }
+  };
 
-  // Returns the first index on an array-like that passes a predicate test
+  // Returns the first index on an array-like that passes a predicate test.
   _.findIndex = createPredicateIndexFinder(1);
   _.findLastIndex = createPredicateIndexFinder(-1);
 
@@ -672,15 +719,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return low;
   };
 
-  // Generator function to create the indexOf and lastIndexOf functions
-  function createIndexFinder(dir, predicateFind, sortedIndex) {
+  // Generator function to create the indexOf and lastIndexOf functions.
+  var createIndexFinder = function(dir, predicateFind, sortedIndex) {
     return function(array, item, idx) {
       var i = 0, length = getLength(array);
       if (typeof idx == 'number') {
         if (dir > 0) {
-            i = idx >= 0 ? idx : Math.max(idx + length, i);
+          i = idx >= 0 ? idx : Math.max(idx + length, i);
         } else {
-            length = idx >= 0 ? Math.min(idx + 1, length) : idx + length + 1;
+          length = idx >= 0 ? Math.min(idx + 1, length) : idx + length + 1;
         }
       } else if (sortedIndex && idx && length) {
         idx = sortedIndex(array, item);
@@ -695,7 +742,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       }
       return -1;
     };
-  }
+  };
 
   // Return the position of the first occurrence of an item in an array,
   // or -1 if the item is not included in the array.
@@ -712,7 +759,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       stop = start || 0;
       start = 0;
     }
-    step = step || 1;
+    if (!step) {
+      step = stop < start ? -1 : 1;
+    }
 
     var length = Math.max(Math.ceil((stop - start) / step), 0);
     var range = Array(length);
@@ -724,11 +773,23 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return range;
   };
 
+  // Chunk a single array into multiple arrays, each containing `count` or fewer
+  // items.
+  _.chunk = function(array, count) {
+    if (count == null || count < 1) return [];
+    var result = [];
+    var i = 0, length = array.length;
+    while (i < length) {
+      result.push(slice.call(array, i, i += count));
+    }
+    return result;
+  };
+
   // Function (ahem) Functions
   // ------------------
 
   // Determines whether to execute a function as a constructor
-  // or a normal function with the provided arguments
+  // or a normal function with the provided arguments.
   var executeBound = function(sourceFunc, boundFunc, context, callingContext, args) {
     if (!(callingContext instanceof boundFunc)) return sourceFunc.apply(context, args);
     var self = baseCreate(sourceFunc.prototype);
@@ -740,52 +801,53 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Create a function bound to a given object (assigning `this`, and arguments,
   // optionally). Delegates to **ECMAScript 5**'s native `Function.bind` if
   // available.
-  _.bind = function(func, context) {
-    if (nativeBind && func.bind === nativeBind) return nativeBind.apply(func, slice.call(arguments, 1));
+  _.bind = restArguments(function(func, context, args) {
     if (!_.isFunction(func)) throw new TypeError('Bind must be called on a function');
-    var args = slice.call(arguments, 2);
-    var bound = function() {
-      return executeBound(func, bound, context, this, args.concat(slice.call(arguments)));
-    };
+    var bound = restArguments(function(callArgs) {
+      return executeBound(func, bound, context, this, args.concat(callArgs));
+    });
     return bound;
-  };
+  });
 
   // Partially apply a function by creating a version that has had some of its
   // arguments pre-filled, without changing its dynamic `this` context. _ acts
-  // as a placeholder, allowing any combination of arguments to be pre-filled.
-  _.partial = function(func) {
-    var boundArgs = slice.call(arguments, 1);
+  // as a placeholder by default, allowing any combination of arguments to be
+  // pre-filled. Set `_.partial.placeholder` for a custom placeholder argument.
+  _.partial = restArguments(function(func, boundArgs) {
+    var placeholder = _.partial.placeholder;
     var bound = function() {
       var position = 0, length = boundArgs.length;
       var args = Array(length);
       for (var i = 0; i < length; i++) {
-        args[i] = boundArgs[i] === _ ? arguments[position++] : boundArgs[i];
+        args[i] = boundArgs[i] === placeholder ? arguments[position++] : boundArgs[i];
       }
       while (position < arguments.length) args.push(arguments[position++]);
       return executeBound(func, bound, this, this, args);
     };
     return bound;
-  };
+  });
+
+  _.partial.placeholder = _;
 
   // Bind a number of an object's methods to that object. Remaining arguments
   // are the method names to be bound. Useful for ensuring that all callbacks
   // defined on an object belong to it.
-  _.bindAll = function(obj) {
-    var i, length = arguments.length, key;
-    if (length <= 1) throw new Error('bindAll must be passed function names');
-    for (i = 1; i < length; i++) {
-      key = arguments[i];
+  _.bindAll = restArguments(function(obj, keys) {
+    keys = flatten(keys, false, false);
+    var index = keys.length;
+    if (index < 1) throw new Error('bindAll must be passed function names');
+    while (index--) {
+      var key = keys[index];
       obj[key] = _.bind(obj[key], obj);
     }
-    return obj;
-  };
+  });
 
   // Memoize an expensive function by storing its results.
   _.memoize = function(func, hasher) {
     var memoize = function(key) {
       var cache = memoize.cache;
       var address = '' + (hasher ? hasher.apply(this, arguments) : key);
-      if (!_.has(cache, address)) cache[address] = func.apply(this, arguments);
+      if (!has(cache, address)) cache[address] = func.apply(this, arguments);
       return cache[address];
     };
     memoize.cache = {};
@@ -794,12 +856,11 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Delays a function for the given number of milliseconds, and then calls
   // it with the arguments supplied.
-  _.delay = function(func, wait) {
-    var args = slice.call(arguments, 2);
-    return setTimeout(function(){
+  _.delay = restArguments(function(func, wait, args) {
+    return setTimeout(function() {
       return func.apply(null, args);
     }, wait);
-  };
+  });
 
   // Defers a function, scheduling it to run after the current call stack has
   // cleared.
@@ -811,17 +872,18 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // but if you'd like to disable the execution on the leading edge, pass
   // `{leading: false}`. To disable execution on the trailing edge, ditto.
   _.throttle = function(func, wait, options) {
-    var context, args, result;
-    var timeout = null;
+    var timeout, context, args, result;
     var previous = 0;
     if (!options) options = {};
+
     var later = function() {
       previous = options.leading === false ? 0 : _.now();
       timeout = null;
       result = func.apply(context, args);
       if (!timeout) context = args = null;
     };
-    return function() {
+
+    var throttled = function() {
       var now = _.now();
       if (!previous && options.leading === false) previous = now;
       var remaining = wait - (now - previous);
@@ -840,6 +902,14 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       }
       return result;
     };
+
+    throttled.cancel = function() {
+      clearTimeout(timeout);
+      previous = 0;
+      timeout = context = args = null;
+    };
+
+    return throttled;
   };
 
   // Returns a function, that, as long as it continues to be invoked, will not
@@ -847,35 +917,32 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // N milliseconds. If `immediate` is passed, trigger the function on the
   // leading edge, instead of the trailing.
   _.debounce = function(func, wait, immediate) {
-    var timeout, args, context, timestamp, result;
+    var timeout, result;
 
-    var later = function() {
-      var last = _.now() - timestamp;
-
-      if (last < wait && last >= 0) {
-        timeout = setTimeout(later, wait - last);
-      } else {
-        timeout = null;
-        if (!immediate) {
-          result = func.apply(context, args);
-          if (!timeout) context = args = null;
-        }
-      }
+    var later = function(context, args) {
+      timeout = null;
+      if (args) result = func.apply(context, args);
     };
 
-    return function() {
-      context = this;
-      args = arguments;
-      timestamp = _.now();
-      var callNow = immediate && !timeout;
-      if (!timeout) timeout = setTimeout(later, wait);
-      if (callNow) {
-        result = func.apply(context, args);
-        context = args = null;
+    var debounced = restArguments(function(args) {
+      if (timeout) clearTimeout(timeout);
+      if (immediate) {
+        var callNow = !timeout;
+        timeout = setTimeout(later, wait);
+        if (callNow) result = func.apply(this, args);
+      } else {
+        timeout = _.delay(later, wait, this, args);
       }
 
       return result;
+    });
+
+    debounced.cancel = function() {
+      clearTimeout(timeout);
+      timeout = null;
     };
+
+    return debounced;
   };
 
   // Returns the first function passed as an argument to the second,
@@ -930,22 +997,24 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // often you call it. Useful for lazy initialization.
   _.once = _.partial(_.before, 2);
 
+  _.restArguments = restArguments;
+
   // Object Functions
   // ----------------
 
   // Keys in IE < 9 that won't be iterated by `for key in ...` and thus missed.
   var hasEnumBug = !{toString: null}.propertyIsEnumerable('toString');
   var nonEnumerableProps = ['valueOf', 'isPrototypeOf', 'toString',
-                      'propertyIsEnumerable', 'hasOwnProperty', 'toLocaleString'];
+    'propertyIsEnumerable', 'hasOwnProperty', 'toLocaleString'];
 
-  function collectNonEnumProps(obj, keys) {
+  var collectNonEnumProps = function(obj, keys) {
     var nonEnumIdx = nonEnumerableProps.length;
     var constructor = obj.constructor;
-    var proto = (_.isFunction(constructor) && constructor.prototype) || ObjProto;
+    var proto = _.isFunction(constructor) && constructor.prototype || ObjProto;
 
     // Constructor is a special case.
     var prop = 'constructor';
-    if (_.has(obj, prop) && !_.contains(keys, prop)) keys.push(prop);
+    if (has(obj, prop) && !_.contains(keys, prop)) keys.push(prop);
 
     while (nonEnumIdx--) {
       prop = nonEnumerableProps[nonEnumIdx];
@@ -953,15 +1022,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         keys.push(prop);
       }
     }
-  }
+  };
 
   // Retrieve the names of an object's own properties.
-  // Delegates to **ECMAScript 5**'s native `Object.keys`
+  // Delegates to **ECMAScript 5**'s native `Object.keys`.
   _.keys = function(obj) {
     if (!_.isObject(obj)) return [];
     if (nativeKeys) return nativeKeys(obj);
     var keys = [];
-    for (var key in obj) if (_.has(obj, key)) keys.push(key);
+    for (var key in obj) if (has(obj, key)) keys.push(key);
     // Ahem, IE < 9.
     if (hasEnumBug) collectNonEnumProps(obj, keys);
     return keys;
@@ -988,22 +1057,22 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return values;
   };
 
-  // Returns the results of applying the iteratee to each element of the object
-  // In contrast to _.map it returns an object
+  // Returns the results of applying the iteratee to each element of the object.
+  // In contrast to _.map it returns an object.
   _.mapObject = function(obj, iteratee, context) {
     iteratee = cb(iteratee, context);
-    var keys =  _.keys(obj),
-          length = keys.length,
-          results = {},
-          currentKey;
-      for (var index = 0; index < length; index++) {
-        currentKey = keys[index];
-        results[currentKey] = iteratee(obj[currentKey], currentKey, obj);
-      }
-      return results;
+    var keys = _.keys(obj),
+        length = keys.length,
+        results = {};
+    for (var index = 0; index < length; index++) {
+      var currentKey = keys[index];
+      results[currentKey] = iteratee(obj[currentKey], currentKey, obj);
+    }
+    return results;
   };
 
   // Convert an object into a list of `[key, value]` pairs.
+  // The opposite of _.object.
   _.pairs = function(obj) {
     var keys = _.keys(obj);
     var length = keys.length;
@@ -1025,7 +1094,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   };
 
   // Return a sorted list of the function names available on the object.
-  // Aliased as `methods`
+  // Aliased as `methods`.
   _.functions = _.methods = function(obj) {
     var names = [];
     for (var key in obj) {
@@ -1034,14 +1103,33 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return names.sort();
   };
 
+  // An internal function for creating assigner functions.
+  var createAssigner = function(keysFunc, defaults) {
+    return function(obj) {
+      var length = arguments.length;
+      if (defaults) obj = Object(obj);
+      if (length < 2 || obj == null) return obj;
+      for (var index = 1; index < length; index++) {
+        var source = arguments[index],
+            keys = keysFunc(source),
+            l = keys.length;
+        for (var i = 0; i < l; i++) {
+          var key = keys[i];
+          if (!defaults || obj[key] === void 0) obj[key] = source[key];
+        }
+      }
+      return obj;
+    };
+  };
+
   // Extend a given object with all the properties in passed-in object(s).
   _.extend = createAssigner(_.allKeys);
 
-  // Assigns a given object with all the own properties in the passed-in object(s)
+  // Assigns a given object with all the own properties in the passed-in object(s).
   // (https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Object/assign)
   _.extendOwn = _.assign = createAssigner(_.keys);
 
-  // Returns the first key on an object that passes a predicate test
+  // Returns the first key on an object that passes a predicate test.
   _.findKey = function(obj, predicate, context) {
     predicate = cb(predicate, context);
     var keys = _.keys(obj), key;
@@ -1051,16 +1139,21 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     }
   };
 
+  // Internal pick helper function to determine if `obj` has key `key`.
+  var keyInObj = function(value, key, obj) {
+    return key in obj;
+  };
+
   // Return a copy of the object only containing the whitelisted properties.
-  _.pick = function(object, oiteratee, context) {
-    var result = {}, obj = object, iteratee, keys;
+  _.pick = restArguments(function(obj, keys) {
+    var result = {}, iteratee = keys[0];
     if (obj == null) return result;
-    if (_.isFunction(oiteratee)) {
+    if (_.isFunction(iteratee)) {
+      if (keys.length > 1) iteratee = optimizeCb(iteratee, keys[1]);
       keys = _.allKeys(obj);
-      iteratee = optimizeCb(oiteratee, context);
     } else {
-      keys = flatten(arguments, false, false, 1);
-      iteratee = function(value, key, obj) { return key in obj; };
+      iteratee = keyInObj;
+      keys = flatten(keys, false, false);
       obj = Object(obj);
     }
     for (var i = 0, length = keys.length; i < length; i++) {
@@ -1069,20 +1162,22 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       if (iteratee(value, key, obj)) result[key] = value;
     }
     return result;
-  };
+  });
 
-   // Return a copy of the object without the blacklisted properties.
-  _.omit = function(obj, iteratee, context) {
+  // Return a copy of the object without the blacklisted properties.
+  _.omit = restArguments(function(obj, keys) {
+    var iteratee = keys[0], context;
     if (_.isFunction(iteratee)) {
       iteratee = _.negate(iteratee);
+      if (keys.length > 1) context = keys[1];
     } else {
-      var keys = _.map(flatten(arguments, false, false, 1), String);
+      keys = _.map(flatten(keys, false, false), String);
       iteratee = function(value, key) {
         return !_.contains(keys, key);
       };
     }
     return _.pick(obj, iteratee, context);
-  };
+  });
 
   // Fill in a given object with default properties.
   _.defaults = createAssigner(_.allKeys, true);
@@ -1124,12 +1219,23 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
 
   // Internal recursive comparison function for `isEqual`.
-  var eq = function(a, b, aStack, bStack) {
+  var eq, deepEq;
+  eq = function(a, b, aStack, bStack) {
     // Identical objects are equal. `0 === -0`, but they aren't identical.
     // See the [Harmony `egal` proposal](http://wiki.ecmascript.org/doku.php?id=harmony:egal).
     if (a === b) return a !== 0 || 1 / a === 1 / b;
-    // A strict comparison is necessary because `null == undefined`.
-    if (a == null || b == null) return a === b;
+    // `null` or `undefined` only equal to itself (strict comparison).
+    if (a == null || b == null) return false;
+    // `NaN`s are equivalent, but non-reflexive.
+    if (a !== a) return b !== b;
+    // Exhaust primitive checks
+    var type = typeof a;
+    if (type !== 'function' && type !== 'object' && typeof b != 'object') return false;
+    return deepEq(a, b, aStack, bStack);
+  };
+
+  // Internal recursive comparison function for `isEqual`.
+  deepEq = function(a, b, aStack, bStack) {
     // Unwrap any wrapped objects.
     if (a instanceof _) a = a._wrapped;
     if (b instanceof _) b = b._wrapped;
@@ -1146,7 +1252,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         return '' + a === '' + b;
       case '[object Number]':
         // `NaN`s are equivalent, but non-reflexive.
-        // Object(NaN) is equivalent to NaN
+        // Object(NaN) is equivalent to NaN.
         if (+a !== +a) return +b !== +b;
         // An `egal` comparison is performed for other numeric values.
         return +a === 0 ? 1 / +a === 1 / b : +a === +b;
@@ -1156,6 +1262,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         // millisecond representations. Note that invalid dates with millisecond representations
         // of `NaN` are not equivalent.
         return +a === +b;
+      case '[object Symbol]':
+        return SymbolProto.valueOf.call(a) === SymbolProto.valueOf.call(b);
     }
 
     var areArrays = className === '[object Array]';
@@ -1207,7 +1315,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       while (length--) {
         // Deep compare each member
         key = keys[length];
-        if (!(_.has(b, key) && eq(a[key], b[key], aStack, bStack))) return false;
+        if (!(has(b, key) && eq(a[key], b[key], aStack, bStack))) return false;
       }
     }
     // Remove the first object from the stack of traversed objects.
@@ -1246,8 +1354,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return type === 'function' || type === 'object' && !!obj;
   };
 
-  // Add some isType methods: isArguments, isFunction, isString, isNumber, isDate, isRegExp, isError.
-  _.each(['Arguments', 'Function', 'String', 'Number', 'Date', 'RegExp', 'Error'], function(name) {
+  // Add some isType methods: isArguments, isFunction, isString, isNumber, isDate, isRegExp, isError, isMap, isWeakMap, isSet, isWeakSet.
+  _.each(['Arguments', 'Function', 'String', 'Number', 'Date', 'RegExp', 'Error', 'Symbol', 'Map', 'WeakMap', 'Set', 'WeakSet'], function(name) {
     _['is' + name] = function(obj) {
       return toString.call(obj) === '[object ' + name + ']';
     };
@@ -1257,13 +1365,14 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // there isn't any inspectable "Arguments" type.
   if (!_.isArguments(arguments)) {
     _.isArguments = function(obj) {
-      return _.has(obj, 'callee');
+      return has(obj, 'callee');
     };
   }
 
   // Optimize `isFunction` if appropriate. Work around some typeof bugs in old v8,
-  // IE 11 (#1621), and in Safari 8 (#1929).
-  if (typeof /./ != 'function' && typeof Int8Array != 'object') {
+  // IE 11 (#1621), Safari 8 (#1929), and PhantomJS (#2236).
+  var nodelist = root.document && root.document.childNodes;
+  if (typeof /./ != 'function' && typeof Int8Array != 'object' && typeof nodelist != 'function') {
     _.isFunction = function(obj) {
       return typeof obj == 'function' || false;
     };
@@ -1271,12 +1380,12 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Is a given object a finite number?
   _.isFinite = function(obj) {
-    return isFinite(obj) && !isNaN(parseFloat(obj));
+    return !_.isSymbol(obj) && isFinite(obj) && !isNaN(parseFloat(obj));
   };
 
-  // Is the given value `NaN`? (NaN is the only number which does not equal itself).
+  // Is the given value `NaN`?
   _.isNaN = function(obj) {
-    return _.isNumber(obj) && obj !== +obj;
+    return _.isNumber(obj) && isNaN(obj);
   };
 
   // Is a given value a boolean?
@@ -1296,8 +1405,19 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Shortcut function for checking if an object has a given property directly
   // on itself (in other words, not on a prototype).
-  _.has = function(obj, key) {
-    return obj != null && hasOwnProperty.call(obj, key);
+  _.has = function(obj, path) {
+    if (!_.isArray(path)) {
+      return has(obj, path);
+    }
+    var length = path.length;
+    for (var i = 0; i < length; i++) {
+      var key = path[i];
+      if (obj == null || !hasOwnProperty.call(obj, key)) {
+        return false;
+      }
+      obj = obj[key];
+    }
+    return !!length;
   };
 
   // Utility Functions
@@ -1324,12 +1444,24 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   _.noop = function(){};
 
-  _.property = property;
+  // Creates a function that, when passed an object, will traverse that object’s
+  // properties down the given `path`, specified as an array of keys or indexes.
+  _.property = function(path) {
+    if (!_.isArray(path)) {
+      return shallowProperty(path);
+    }
+    return function(obj) {
+      return deepGet(obj, path);
+    };
+  };
 
   // Generates a function for a given object that returns a given property.
   _.propertyOf = function(obj) {
-    return obj == null ? function(){} : function(key) {
-      return obj[key];
+    if (obj == null) {
+      return function(){};
+    }
+    return function(path) {
+      return !_.isArray(path) ? obj[path] : deepGet(obj, path);
     };
   };
 
@@ -1364,7 +1496,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return new Date().getTime();
   };
 
-   // List of HTML entities for escaping.
+  // List of HTML entities for escaping.
   var escapeMap = {
     '&': '&amp;',
     '<': '&lt;',
@@ -1380,7 +1512,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     var escaper = function(match) {
       return map[match];
     };
-    // Regexes for identifying a key that needs to be escaped
+    // Regexes for identifying a key that needs to be escaped.
     var source = '(?:' + _.keys(map).join('|') + ')';
     var testRegexp = RegExp(source);
     var replaceRegexp = RegExp(source, 'g');
@@ -1392,14 +1524,24 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   _.escape = createEscaper(escapeMap);
   _.unescape = createEscaper(unescapeMap);
 
-  // If the value of the named `property` is a function then invoke it with the
-  // `object` as context; otherwise, return it.
-  _.result = function(object, property, fallback) {
-    var value = object == null ? void 0 : object[property];
-    if (value === void 0) {
-      value = fallback;
+  // Traverses the children of `obj` along `path`. If a child is a function, it
+  // is invoked with its parent as context. Returns the value of the final
+  // child, or `fallback` if any child is undefined.
+  _.result = function(obj, path, fallback) {
+    if (!_.isArray(path)) path = [path];
+    var length = path.length;
+    if (!length) {
+      return _.isFunction(fallback) ? fallback.call(obj) : fallback;
     }
-    return _.isFunction(value) ? value.call(object) : value;
+    for (var i = 0; i < length; i++) {
+      var prop = obj == null ? void 0 : obj[path[i]];
+      if (prop === void 0) {
+        prop = fallback;
+        i = length; // Ensure we don't continue iterating.
+      }
+      obj = _.isFunction(prop) ? prop.call(obj) : prop;
+    }
+    return obj;
   };
 
   // Generate a unique integer id (unique within the entire client session).
@@ -1413,9 +1555,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // By default, Underscore uses ERB-style template delimiters, change the
   // following template settings to use alternative delimiters.
   _.templateSettings = {
-    evaluate    : /<%([\s\S]+?)%>/g,
-    interpolate : /<%=([\s\S]+?)%>/g,
-    escape      : /<%-([\s\S]+?)%>/g
+    evaluate: /<%([\s\S]+?)%>/g,
+    interpolate: /<%=([\s\S]+?)%>/g,
+    escape: /<%-([\s\S]+?)%>/g
   };
 
   // When customizing `templateSettings`, if you don't want to define an
@@ -1426,15 +1568,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Certain characters need to be escaped so that they can be put into a
   // string literal.
   var escapes = {
-    "'":      "'",
-    '\\':     '\\',
-    '\r':     'r',
-    '\n':     'n',
+    "'": "'",
+    '\\': '\\',
+    '\r': 'r',
+    '\n': 'n',
     '\u2028': 'u2028',
     '\u2029': 'u2029'
   };
 
-  var escaper = /\\|'|\r|\n|\u2028|\u2029/g;
+  var escapeRegExp = /\\|'|\r|\n|\u2028|\u2029/g;
 
   var escapeChar = function(match) {
     return '\\' + escapes[match];
@@ -1459,7 +1601,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     var index = 0;
     var source = "__p+='";
     text.replace(matcher, function(match, escape, interpolate, evaluate, offset) {
-      source += text.slice(index, offset).replace(escaper, escapeChar);
+      source += text.slice(index, offset).replace(escapeRegExp, escapeChar);
       index = offset + match.length;
 
       if (escape) {
@@ -1470,7 +1612,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         source += "';\n" + evaluate + "\n__p+='";
       }
 
-      // Adobe VMs need the match returned to produce the correct offest.
+      // Adobe VMs need the match returned to produce the correct offset.
       return match;
     });
     source += "';\n";
@@ -1482,8 +1624,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       "print=function(){__p+=__j.call(arguments,'');};\n" +
       source + 'return __p;\n';
 
+    var render;
     try {
-      var render = new Function(settings.variable || 'obj', '_', source);
+      render = new Function(settings.variable || 'obj', '_', source);
     } catch (e) {
       e.source = source;
       throw e;
@@ -1514,7 +1657,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // underscore functions. Wrapped objects may be chained.
 
   // Helper function to continue chaining intermediate results.
-  var result = function(instance, obj) {
+  var chainResult = function(instance, obj) {
     return instance._chain ? _(obj).chain() : obj;
   };
 
@@ -1525,9 +1668,10 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       _.prototype[name] = function() {
         var args = [this._wrapped];
         push.apply(args, arguments);
-        return result(this, func.apply(_, args));
+        return chainResult(this, func.apply(_, args));
       };
     });
+    return _;
   };
 
   // Add all of the Underscore functions to the wrapper object.
@@ -1540,7 +1684,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       var obj = this._wrapped;
       method.apply(obj, arguments);
       if ((name === 'shift' || name === 'splice') && obj.length === 0) delete obj[0];
-      return result(this, obj);
+      return chainResult(this, obj);
     };
   });
 
@@ -1548,7 +1692,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   _.each(['concat', 'join', 'slice'], function(name) {
     var method = ArrayProto[name];
     _.prototype[name] = function() {
-      return result(this, method.apply(this._wrapped, arguments));
+      return chainResult(this, method.apply(this._wrapped, arguments));
     };
   });
 
@@ -1562,7 +1706,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   _.prototype.valueOf = _.prototype.toJSON = _.prototype.value;
 
   _.prototype.toString = function() {
-    return '' + this._wrapped;
+    return String(this._wrapped);
   };
 
   // AMD registration happens at the end for compatibility with AMD loaders
@@ -1572,21 +1716,26 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // popular enough to be bundled in a third party lib, but not be part of
   // an AMD load request. Those cases could generate an error when an
   // anonymous define() is called outside of a loader request.
-  if (typeof define === 'function' && define.amd) {
+  if (typeof define == 'function' && define.amd) {
     define('underscore', [], function() {
       return _;
     });
   }
-}.call(this));
+}());
 
-//     Backbone.js 1.1.2
+//     Backbone.js 1.4.0
 
-//     (c) 2010-2014 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+//     (c) 2010-2019 Jeremy Ashkenas and DocumentCloud
 //     Backbone may be freely distributed under the MIT license.
 //     For all details and documentation:
 //     http://backbonejs.org
 
-(function(root, factory) {
+(function(factory) {
+
+  // Establish the root object, `window` (`self`) in the browser, or `global` on the server.
+  // We use `self` instead of `window` for `WebWorker` support.
+  var root = typeof self == 'object' && self.self === self && self ||
+            typeof global == 'object' && global.global === global && global;
 
   // Set up Backbone appropriately for the environment. Start with AMD.
   if (typeof define === 'function' && define.amd) {
@@ -1598,15 +1747,16 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Next for Node.js or CommonJS. jQuery may not be needed as a module.
   } else if (typeof exports !== 'undefined') {
-    var _ = require('underscore');
-    factory(root, exports, _);
+    var _ = require('underscore'), $;
+    try { $ = require('jquery'); } catch (e) {}
+    factory(root, exports, _, $);
 
   // Finally, as a browser global.
   } else {
-    root.Backbone = factory(root, {}, root._, (root.jQuery || root.Zepto || root.ender || root.$));
+    root.Backbone = factory(root, {}, root._, root.jQuery || root.Zepto || root.ender || root.$);
   }
 
-}(this, function(root, Backbone, _, $) {
+})(function(root, Backbone, _, $) {
 
   // Initial Setup
   // -------------
@@ -1615,14 +1765,11 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // restored later on, if `noConflict` is used.
   var previousBackbone = root.Backbone;
 
-  // Create local references to array methods we'll want to use later.
-  var array = [];
-  var push = array.push;
-  var slice = array.slice;
-  var splice = array.splice;
+  // Create a local reference to a common array method we'll want to use later.
+  var slice = Array.prototype.slice;
 
   // Current version of the library. Keep in sync with `package.json`.
-  Backbone.VERSION = '1.1.2';
+  Backbone.VERSION = '1.4.0';
 
   // For Backbone's purposes, jQuery, Zepto, Ender, or My Library (kidding) owns
   // the `$` variable.
@@ -1641,7 +1788,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   Backbone.emulateHTTP = false;
 
   // Turn on `emulateJSON` to support legacy servers that can't deal with direct
-  // `application/json` requests ... will encode the body as
+  // `application/json` requests ... this will encode the body as
   // `application/x-www-form-urlencoded` instead and will send the model in a
   // form param named `model`.
   Backbone.emulateJSON = false;
@@ -1650,8 +1797,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // ---------------
 
   // A module that can be mixed in to *any object* in order to provide it with
-  // custom events. You may bind with `on` or remove with `off` callback
-  // functions to an event; `trigger`-ing an event fires all callbacks in
+  // a custom event channel. You may bind a callback to an event with `on` or
+  // remove with `off`; `trigger`-ing an event fires all callbacks in
   // succession.
   //
   //     var object = {};
@@ -1659,123 +1806,248 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   //     object.on('expand', function(){ alert('expanded'); });
   //     object.trigger('expand');
   //
-  var Events = Backbone.Events = {
-
-    // Bind an event to a `callback` function. Passing `"all"` will bind
-    // the callback to all events fired.
-    on: function(name, callback, context) {
-      if (!eventsApi(this, 'on', name, [callback, context]) || !callback) return this;
-      this._events || (this._events = {});
-      var events = this._events[name] || (this._events[name] = []);
-      events.push({callback: callback, context: context, ctx: context || this});
-      return this;
-    },
-
-    // Bind an event to only be triggered a single time. After the first time
-    // the callback is invoked, it will be removed.
-    once: function(name, callback, context) {
-      if (!eventsApi(this, 'once', name, [callback, context]) || !callback) return this;
-      var self = this;
-      var once = _.once(function() {
-        self.off(name, once);
-        callback.apply(this, arguments);
-      });
-      once._callback = callback;
-      return this.on(name, once, context);
-    },
-
-    // Remove one or many callbacks. If `context` is null, removes all
-    // callbacks with that function. If `callback` is null, removes all
-    // callbacks for the event. If `name` is null, removes all bound
-    // callbacks for all events.
-    off: function(name, callback, context) {
-      var retain, ev, events, names, i, l, j, k;
-      if (!this._events || !eventsApi(this, 'off', name, [callback, context])) return this;
-      if (!name && !callback && !context) {
-        this._events = void 0;
-        return this;
-      }
-      names = name ? [name] : _.keys(this._events);
-      for (i = 0, l = names.length; i < l; i++) {
-        name = names[i];
-        if (events = this._events[name]) {
-          this._events[name] = retain = [];
-          if (callback || context) {
-            for (j = 0, k = events.length; j < k; j++) {
-              ev = events[j];
-              if ((callback && callback !== ev.callback && callback !== ev.callback._callback) ||
-                  (context && context !== ev.context)) {
-                retain.push(ev);
-              }
-            }
-          }
-          if (!retain.length) delete this._events[name];
-        }
-      }
-
-      return this;
-    },
-
-    // Trigger one or many events, firing all bound callbacks. Callbacks are
-    // passed the same arguments as `trigger` is, apart from the event name
-    // (unless you're listening on `"all"`, which will cause your callback to
-    // receive the true name of the event as the first argument).
-    trigger: function(name) {
-      if (!this._events) return this;
-      var args = slice.call(arguments, 1);
-      if (!eventsApi(this, 'trigger', name, args)) return this;
-      var events = this._events[name];
-      var allEvents = this._events.all;
-      if (events) triggerEvents(events, args);
-      if (allEvents) triggerEvents(allEvents, arguments);
-      return this;
-    },
-
-    // Tell this object to stop listening to either specific events ... or
-    // to every object it's currently listening to.
-    stopListening: function(obj, name, callback) {
-      var listeningTo = this._listeningTo;
-      if (!listeningTo) return this;
-      var remove = !name && !callback;
-      if (!callback && typeof name === 'object') callback = this;
-      if (obj) (listeningTo = {})[obj._listenId] = obj;
-      for (var id in listeningTo) {
-        obj = listeningTo[id];
-        obj.off(name, callback, this);
-        if (remove || _.isEmpty(obj._events)) delete this._listeningTo[id];
-      }
-      return this;
-    }
-
-  };
+  var Events = Backbone.Events = {};
 
   // Regular expression used to split event strings.
   var eventSplitter = /\s+/;
 
-  // Implement fancy features of the Events API such as multiple event
-  // names `"change blur"` and jQuery-style event maps `{change: action}`
-  // in terms of the existing API.
-  var eventsApi = function(obj, action, name, rest) {
-    if (!name) return true;
+  // A private global variable to share between listeners and listenees.
+  var _listening;
 
-    // Handle event maps.
-    if (typeof name === 'object') {
-      for (var key in name) {
-        obj[action].apply(obj, [key, name[key]].concat(rest));
+  // Iterates over the standard `event, callback` (as well as the fancy multiple
+  // space-separated events `"change blur", callback` and jQuery-style event
+  // maps `{event: callback}`).
+  var eventsApi = function(iteratee, events, name, callback, opts) {
+    var i = 0, names;
+    if (name && typeof name === 'object') {
+      // Handle event maps.
+      if (callback !== void 0 && 'context' in opts && opts.context === void 0) opts.context = callback;
+      for (names = _.keys(name); i < names.length ; i++) {
+        events = eventsApi(iteratee, events, names[i], name[names[i]], opts);
       }
-      return false;
+    } else if (name && eventSplitter.test(name)) {
+      // Handle space-separated event names by delegating them individually.
+      for (names = name.split(eventSplitter); i < names.length; i++) {
+        events = iteratee(events, names[i], callback, opts);
+      }
+    } else {
+      // Finally, standard events.
+      events = iteratee(events, name, callback, opts);
+    }
+    return events;
+  };
+
+  // Bind an event to a `callback` function. Passing `"all"` will bind
+  // the callback to all events fired.
+  Events.on = function(name, callback, context) {
+    this._events = eventsApi(onApi, this._events || {}, name, callback, {
+      context: context,
+      ctx: this,
+      listening: _listening
+    });
+
+    if (_listening) {
+      var listeners = this._listeners || (this._listeners = {});
+      listeners[_listening.id] = _listening;
+      // Allow the listening to use a counter, instead of tracking
+      // callbacks for library interop
+      _listening.interop = false;
     }
 
-    // Handle space separated event names.
-    if (eventSplitter.test(name)) {
-      var names = name.split(eventSplitter);
-      for (var i = 0, l = names.length; i < l; i++) {
-        obj[action].apply(obj, [names[i]].concat(rest));
-      }
-      return false;
+    return this;
+  };
+
+  // Inversion-of-control versions of `on`. Tell *this* object to listen to
+  // an event in another object... keeping track of what it's listening to
+  // for easier unbinding later.
+  Events.listenTo = function(obj, name, callback) {
+    if (!obj) return this;
+    var id = obj._listenId || (obj._listenId = _.uniqueId('l'));
+    var listeningTo = this._listeningTo || (this._listeningTo = {});
+    var listening = _listening = listeningTo[id];
+
+    // This object is not listening to any other events on `obj` yet.
+    // Setup the necessary references to track the listening callbacks.
+    if (!listening) {
+      this._listenId || (this._listenId = _.uniqueId('l'));
+      listening = _listening = listeningTo[id] = new Listening(this, obj);
     }
 
-    return true;
+    // Bind callbacks on obj.
+    var error = tryCatchOn(obj, name, callback, this);
+    _listening = void 0;
+
+    if (error) throw error;
+    // If the target obj is not Backbone.Events, track events manually.
+    if (listening.interop) listening.on(name, callback);
+
+    return this;
+  };
+
+  // The reducing API that adds a callback to the `events` object.
+  var onApi = function(events, name, callback, options) {
+    if (callback) {
+      var handlers = events[name] || (events[name] = []);
+      var context = options.context, ctx = options.ctx, listening = options.listening;
+      if (listening) listening.count++;
+
+      handlers.push({callback: callback, context: context, ctx: context || ctx, listening: listening});
+    }
+    return events;
+  };
+
+  // An try-catch guarded #on function, to prevent poisoning the global
+  // `_listening` variable.
+  var tryCatchOn = function(obj, name, callback, context) {
+    try {
+      obj.on(name, callback, context);
+    } catch (e) {
+      return e;
+    }
+  };
+
+  // Remove one or many callbacks. If `context` is null, removes all
+  // callbacks with that function. If `callback` is null, removes all
+  // callbacks for the event. If `name` is null, removes all bound
+  // callbacks for all events.
+  Events.off = function(name, callback, context) {
+    if (!this._events) return this;
+    this._events = eventsApi(offApi, this._events, name, callback, {
+      context: context,
+      listeners: this._listeners
+    });
+
+    return this;
+  };
+
+  // Tell this object to stop listening to either specific events ... or
+  // to every object it's currently listening to.
+  Events.stopListening = function(obj, name, callback) {
+    var listeningTo = this._listeningTo;
+    if (!listeningTo) return this;
+
+    var ids = obj ? [obj._listenId] : _.keys(listeningTo);
+    for (var i = 0; i < ids.length; i++) {
+      var listening = listeningTo[ids[i]];
+
+      // If listening doesn't exist, this object is not currently
+      // listening to obj. Break out early.
+      if (!listening) break;
+
+      listening.obj.off(name, callback, this);
+      if (listening.interop) listening.off(name, callback);
+    }
+    if (_.isEmpty(listeningTo)) this._listeningTo = void 0;
+
+    return this;
+  };
+
+  // The reducing API that removes a callback from the `events` object.
+  var offApi = function(events, name, callback, options) {
+    if (!events) return;
+
+    var context = options.context, listeners = options.listeners;
+    var i = 0, names;
+
+    // Delete all event listeners and "drop" events.
+    if (!name && !context && !callback) {
+      for (names = _.keys(listeners); i < names.length; i++) {
+        listeners[names[i]].cleanup();
+      }
+      return;
+    }
+
+    names = name ? [name] : _.keys(events);
+    for (; i < names.length; i++) {
+      name = names[i];
+      var handlers = events[name];
+
+      // Bail out if there are no events stored.
+      if (!handlers) break;
+
+      // Find any remaining events.
+      var remaining = [];
+      for (var j = 0; j < handlers.length; j++) {
+        var handler = handlers[j];
+        if (
+          callback && callback !== handler.callback &&
+            callback !== handler.callback._callback ||
+              context && context !== handler.context
+        ) {
+          remaining.push(handler);
+        } else {
+          var listening = handler.listening;
+          if (listening) listening.off(name, callback);
+        }
+      }
+
+      // Replace events if there are any remaining.  Otherwise, clean up.
+      if (remaining.length) {
+        events[name] = remaining;
+      } else {
+        delete events[name];
+      }
+    }
+
+    return events;
+  };
+
+  // Bind an event to only be triggered a single time. After the first time
+  // the callback is invoked, its listener will be removed. If multiple events
+  // are passed in using the space-separated syntax, the handler will fire
+  // once for each event, not once for a combination of all events.
+  Events.once = function(name, callback, context) {
+    // Map the event into a `{event: once}` object.
+    var events = eventsApi(onceMap, {}, name, callback, this.off.bind(this));
+    if (typeof name === 'string' && context == null) callback = void 0;
+    return this.on(events, callback, context);
+  };
+
+  // Inversion-of-control versions of `once`.
+  Events.listenToOnce = function(obj, name, callback) {
+    // Map the event into a `{event: once}` object.
+    var events = eventsApi(onceMap, {}, name, callback, this.stopListening.bind(this, obj));
+    return this.listenTo(obj, events);
+  };
+
+  // Reduces the event callbacks into a map of `{event: onceWrapper}`.
+  // `offer` unbinds the `onceWrapper` after it has been called.
+  var onceMap = function(map, name, callback, offer) {
+    if (callback) {
+      var once = map[name] = _.once(function() {
+        offer(name, once);
+        callback.apply(this, arguments);
+      });
+      once._callback = callback;
+    }
+    return map;
+  };
+
+  // Trigger one or many events, firing all bound callbacks. Callbacks are
+  // passed the same arguments as `trigger` is, apart from the event name
+  // (unless you're listening on `"all"`, which will cause your callback to
+  // receive the true name of the event as the first argument).
+  Events.trigger = function(name) {
+    if (!this._events) return this;
+
+    var length = Math.max(0, arguments.length - 1);
+    var args = Array(length);
+    for (var i = 0; i < length; i++) args[i] = arguments[i + 1];
+
+    eventsApi(triggerApi, this._events, name, void 0, args);
+    return this;
+  };
+
+  // Handles triggering the appropriate event callbacks.
+  var triggerApi = function(objEvents, name, callback, args) {
+    if (objEvents) {
+      var events = objEvents[name];
+      var allEvents = objEvents.all;
+      if (events && allEvents) allEvents = allEvents.slice();
+      if (events) triggerEvents(events, args);
+      if (allEvents) triggerEvents(allEvents, [name].concat(args));
+    }
+    return objEvents;
   };
 
   // A difficult-to-believe, but optimized internal dispatch function for
@@ -1792,21 +2064,43 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     }
   };
 
-  var listenMethods = {listenTo: 'on', listenToOnce: 'once'};
+  // A listening class that tracks and cleans up memory bindings
+  // when all callbacks have been offed.
+  var Listening = function(listener, obj) {
+    this.id = listener._listenId;
+    this.listener = listener;
+    this.obj = obj;
+    this.interop = true;
+    this.count = 0;
+    this._events = void 0;
+  };
 
-  // Inversion-of-control versions of `on` and `once`. Tell *this* object to
-  // listen to an event in another object ... keeping track of what it's
-  // listening to.
-  _.each(listenMethods, function(implementation, method) {
-    Events[method] = function(obj, name, callback) {
-      var listeningTo = this._listeningTo || (this._listeningTo = {});
-      var id = obj._listenId || (obj._listenId = _.uniqueId('l'));
-      listeningTo[id] = obj;
-      if (!callback && typeof name === 'object') callback = this;
-      obj[implementation](name, callback, this);
-      return this;
-    };
-  });
+  Listening.prototype.on = Events.on;
+
+  // Offs a callback (or several).
+  // Uses an optimized counter if the listenee uses Backbone.Events.
+  // Otherwise, falls back to manual tracking to support events
+  // library interop.
+  Listening.prototype.off = function(name, callback) {
+    var cleanup;
+    if (this.interop) {
+      this._events = eventsApi(offApi, this._events, name, callback, {
+        context: void 0,
+        listeners: void 0
+      });
+      cleanup = !this._events;
+    } else {
+      this.count--;
+      cleanup = this.count === 0;
+    }
+    if (cleanup) this.cleanup();
+  };
+
+  // Cleans up memory bindings between the listener and the listenee.
+  Listening.prototype.cleanup = function() {
+    delete this.listener._listeningTo[this.obj._listenId];
+    if (!this.interop) delete this.obj._listeners[this.id];
+  };
 
   // Aliases for backwards compatibility.
   Events.bind   = Events.on;
@@ -1829,11 +2123,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   var Model = Backbone.Model = function(attributes, options) {
     var attrs = attributes || {};
     options || (options = {});
-    this.cid = _.uniqueId('c');
+    this.preinitialize.apply(this, arguments);
+    this.cid = _.uniqueId(this.cidPrefix);
     this.attributes = {};
     if (options.collection) this.collection = options.collection;
     if (options.parse) attrs = this.parse(attrs, options) || {};
-    attrs = _.defaults({}, attrs, _.result(this, 'defaults'));
+    var defaults = _.result(this, 'defaults');
+    attrs = _.defaults(_.extend({}, defaults, attrs), defaults);
     this.set(attrs, options);
     this.changed = {};
     this.initialize.apply(this, arguments);
@@ -1851,6 +2147,14 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // The default name for the JSON `id` attribute is `"id"`. MongoDB and
     // CouchDB users may want to set this to `"_id"`.
     idAttribute: 'id',
+
+    // The prefix is used to create the client id which is used to identify models locally.
+    // You may want to override this if you're experiencing name clashes with model ids.
+    cidPrefix: 'c',
+
+    // preinitialize is an empty function by default. You can override it with a function
+    // or object.  preinitialize will run before any instantiation logic is run in the Model.
+    preinitialize: function(){},
 
     // Initialize is an empty function by default. Override it with your own
     // initialization logic.
@@ -1883,14 +2187,19 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return this.get(attr) != null;
     },
 
+    // Special-cased proxy to underscore's `_.matches` method.
+    matches: function(attrs) {
+      return !!_.iteratee(attrs, this)(this.attributes);
+    },
+
     // Set a hash of model attributes on the object, firing `"change"`. This is
     // the core primitive operation of a model, updating the data and notifying
     // anyone who needs to know about the change in state. The heart of the beast.
     set: function(key, val, options) {
-      var attr, attrs, unset, changes, silent, changing, prev, current;
       if (key == null) return this;
 
       // Handle both `"key", value` and `{key: value}` -style arguments.
+      var attrs;
       if (typeof key === 'object') {
         attrs = key;
         options = val;
@@ -1904,37 +2213,40 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       if (!this._validate(attrs, options)) return false;
 
       // Extract attributes and options.
-      unset           = options.unset;
-      silent          = options.silent;
-      changes         = [];
-      changing        = this._changing;
-      this._changing  = true;
+      var unset      = options.unset;
+      var silent     = options.silent;
+      var changes    = [];
+      var changing   = this._changing;
+      this._changing = true;
 
       if (!changing) {
         this._previousAttributes = _.clone(this.attributes);
         this.changed = {};
       }
-      current = this.attributes, prev = this._previousAttributes;
 
-      // Check for changes of `id`.
-      if (this.idAttribute in attrs) this.id = attrs[this.idAttribute];
+      var current = this.attributes;
+      var changed = this.changed;
+      var prev    = this._previousAttributes;
 
       // For each `set` attribute, update or delete the current value.
-      for (attr in attrs) {
+      for (var attr in attrs) {
         val = attrs[attr];
         if (!_.isEqual(current[attr], val)) changes.push(attr);
         if (!_.isEqual(prev[attr], val)) {
-          this.changed[attr] = val;
+          changed[attr] = val;
         } else {
-          delete this.changed[attr];
+          delete changed[attr];
         }
         unset ? delete current[attr] : current[attr] = val;
       }
 
+      // Update the `id`.
+      if (this.idAttribute in attrs) this.id = this.get(this.idAttribute);
+
       // Trigger all relevant attribute changes.
       if (!silent) {
         if (changes.length) this._pending = options;
-        for (var i = 0, l = changes.length; i < l; i++) {
+        for (var i = 0; i < changes.length; i++) {
           this.trigger('change:' + changes[i], this, current[changes[i]], options);
         }
       }
@@ -1982,13 +2294,16 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // determining if there *would be* a change.
     changedAttributes: function(diff) {
       if (!diff) return this.hasChanged() ? _.clone(this.changed) : false;
-      var val, changed = false;
       var old = this._changing ? this._previousAttributes : this.attributes;
+      var changed = {};
+      var hasChanged;
       for (var attr in diff) {
-        if (_.isEqual(old[attr], (val = diff[attr]))) continue;
-        (changed || (changed = {}))[attr] = val;
+        var val = diff[attr];
+        if (_.isEqual(old[attr], val)) continue;
+        changed[attr] = val;
+        hasChanged = true;
       }
-      return changed;
+      return hasChanged ? changed : false;
     },
 
     // Get the previous value of an attribute, recorded at the time the last
@@ -2004,17 +2319,16 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return _.clone(this._previousAttributes);
     },
 
-    // Fetch the model from the server. If the server's representation of the
-    // model differs from its current attributes, they will be overridden,
-    // triggering a `"change"` event.
+    // Fetch the model from the server, merging the response with the model's
+    // local attributes. Any changed attributes will trigger a "change" event.
     fetch: function(options) {
-      options = options ? _.clone(options) : {};
-      if (options.parse === void 0) options.parse = true;
+      options = _.extend({parse: true}, options);
       var model = this;
       var success = options.success;
       options.success = function(resp) {
-        if (!model.set(model.parse(resp, options), options)) return false;
-        if (success) success(model, resp, options);
+        var serverAttrs = options.parse ? model.parse(resp, options) : resp;
+        if (!model.set(serverAttrs, options)) return false;
+        if (success) success.call(options.context, model, resp, options);
         model.trigger('sync', model, resp, options);
       };
       wrapError(this, options);
@@ -2025,9 +2339,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // If the server returns an attributes hash that differs, the model's
     // state will be `set` again.
     save: function(key, val, options) {
-      var attrs, method, xhr, attributes = this.attributes;
-
       // Handle both `"key", value` and `{key: value}` -style arguments.
+      var attrs;
       if (key == null || typeof key === 'object') {
         attrs = key;
         options = val;
@@ -2035,46 +2348,43 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         (attrs = {})[key] = val;
       }
 
-      options = _.extend({validate: true}, options);
+      options = _.extend({validate: true, parse: true}, options);
+      var wait = options.wait;
 
       // If we're not waiting and attributes exist, save acts as
       // `set(attr).save(null, opts)` with validation. Otherwise, check if
       // the model will be valid when the attributes, if any, are set.
-      if (attrs && !options.wait) {
+      if (attrs && !wait) {
         if (!this.set(attrs, options)) return false;
-      } else {
-        if (!this._validate(attrs, options)) return false;
-      }
-
-      // Set temporary attributes if `{wait: true}`.
-      if (attrs && options.wait) {
-        this.attributes = _.extend({}, attributes, attrs);
+      } else if (!this._validate(attrs, options)) {
+        return false;
       }
 
       // After a successful server-side save, the client is (optionally)
       // updated with the server-side state.
-      if (options.parse === void 0) options.parse = true;
       var model = this;
       var success = options.success;
+      var attributes = this.attributes;
       options.success = function(resp) {
         // Ensure attributes are restored during synchronous saves.
         model.attributes = attributes;
-        var serverAttrs = model.parse(resp, options);
-        if (options.wait) serverAttrs = _.extend(attrs || {}, serverAttrs);
-        if (_.isObject(serverAttrs) && !model.set(serverAttrs, options)) {
-          return false;
-        }
-        if (success) success(model, resp, options);
+        var serverAttrs = options.parse ? model.parse(resp, options) : resp;
+        if (wait) serverAttrs = _.extend({}, attrs, serverAttrs);
+        if (serverAttrs && !model.set(serverAttrs, options)) return false;
+        if (success) success.call(options.context, model, resp, options);
         model.trigger('sync', model, resp, options);
       };
       wrapError(this, options);
 
-      method = this.isNew() ? 'create' : (options.patch ? 'patch' : 'update');
-      if (method === 'patch') options.attrs = attrs;
-      xhr = this.sync(method, this, options);
+      // Set temporary attributes if `{wait: true}` to properly find new ids.
+      if (attrs && wait) this.attributes = _.extend({}, attributes, attrs);
+
+      var method = this.isNew() ? 'create' : options.patch ? 'patch' : 'update';
+      if (method === 'patch' && !options.attrs) options.attrs = attrs;
+      var xhr = this.sync(method, this, options);
 
       // Restore attributes.
-      if (attrs && options.wait) this.attributes = attributes;
+      this.attributes = attributes;
 
       return xhr;
     },
@@ -2086,25 +2396,27 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       options = options ? _.clone(options) : {};
       var model = this;
       var success = options.success;
+      var wait = options.wait;
 
       var destroy = function() {
+        model.stopListening();
         model.trigger('destroy', model, model.collection, options);
       };
 
       options.success = function(resp) {
-        if (options.wait || model.isNew()) destroy();
-        if (success) success(model, resp, options);
+        if (wait) destroy();
+        if (success) success.call(options.context, model, resp, options);
         if (!model.isNew()) model.trigger('sync', model, resp, options);
       };
 
+      var xhr = false;
       if (this.isNew()) {
-        options.success();
-        return false;
+        _.defer(options.success);
+      } else {
+        wrapError(this, options);
+        xhr = this.sync('delete', this, options);
       }
-      wrapError(this, options);
-
-      var xhr = this.sync('delete', this, options);
-      if (!options.wait) destroy();
+      if (!wait) destroy();
       return xhr;
     },
 
@@ -2117,7 +2429,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         _.result(this.collection, 'url') ||
         urlError();
       if (this.isNew()) return base;
-      return base.replace(/([^\/])$/, '$1/') + encodeURIComponent(this.id);
+      var id = this.get(this.idAttribute);
+      return base.replace(/[^\/]$/, '$&/') + encodeURIComponent(id);
     },
 
     // **parse** converts a response into the hash of attributes to be `set` on
@@ -2138,7 +2451,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
     // Check if the model is currently in a valid state.
     isValid: function(options) {
-      return this._validate({}, _.extend(options || {}, { validate: true }));
+      return this._validate({}, _.extend({}, options, {validate: true}));
     },
 
     // Run validation against the next complete set of model attributes,
@@ -2154,23 +2467,11 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   });
 
-  // Underscore methods that we want to implement on the Model.
-  var modelMethods = ['keys', 'values', 'pairs', 'invert', 'pick', 'omit'];
-
-  // Mix in each Underscore method as a proxy to `Model#attributes`.
-  _.each(modelMethods, function(method) {
-    Model.prototype[method] = function() {
-      var args = slice.call(arguments);
-      args.unshift(this.attributes);
-      return _[method].apply(_, args);
-    };
-  });
-
   // Backbone.Collection
   // -------------------
 
   // If models tend to represent a single row of data, a Backbone Collection is
-  // more analagous to a table full of data ... or a small slice or page of that
+  // more analogous to a table full of data ... or a small slice or page of that
   // table, or a collection of rows that belong together for a particular reason
   // -- all of the messages in this particular folder, all of the documents
   // belonging to this particular author, and so on. Collections maintain
@@ -2181,6 +2482,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // its models in sort order, as they're added and removed.
   var Collection = Backbone.Collection = function(models, options) {
     options || (options = {});
+    this.preinitialize.apply(this, arguments);
     if (options.model) this.model = options.model;
     if (options.comparator !== void 0) this.comparator = options.comparator;
     this._reset();
@@ -2192,12 +2494,28 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   var setOptions = {add: true, remove: true, merge: true};
   var addOptions = {add: true, remove: false};
 
+  // Splices `insert` into `array` at index `at`.
+  var splice = function(array, insert, at) {
+    at = Math.min(Math.max(at, 0), array.length);
+    var tail = Array(array.length - at);
+    var length = insert.length;
+    var i;
+    for (i = 0; i < tail.length; i++) tail[i] = array[i + at];
+    for (i = 0; i < length; i++) array[i + at] = insert[i];
+    for (i = 0; i < tail.length; i++) array[i + length + at] = tail[i];
+  };
+
   // Define the Collection's inheritable methods.
   _.extend(Collection.prototype, Events, {
 
     // The default model for a collection is just a **Backbone.Model**.
     // This should be overridden in most cases.
     model: Model,
+
+
+    // preinitialize is an empty function by default. You can override it with a function
+    // or object.  preinitialize will run before any instantiation logic is run in the Collection.
+    preinitialize: function(){},
 
     // Initialize is an empty function by default. Override it with your own
     // initialization logic.
@@ -2206,7 +2524,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // The JSON representation of a Collection is an array of the
     // models' attributes.
     toJSON: function(options) {
-      return this.map(function(model){ return model.toJSON(options); });
+      return this.map(function(model) { return model.toJSON(options); });
     },
 
     // Proxy `Backbone.sync` by default.
@@ -2214,32 +2532,24 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return Backbone.sync.apply(this, arguments);
     },
 
-    // Add a model, or list of models to the set.
+    // Add a model, or list of models to the set. `models` may be Backbone
+    // Models or raw JavaScript objects to be converted to Models, or any
+    // combination of the two.
     add: function(models, options) {
       return this.set(models, _.extend({merge: false}, options, addOptions));
     },
 
     // Remove a model, or a list of models from the set.
     remove: function(models, options) {
+      options = _.extend({}, options);
       var singular = !_.isArray(models);
-      models = singular ? [models] : _.clone(models);
-      options || (options = {});
-      var i, l, index, model;
-      for (i = 0, l = models.length; i < l; i++) {
-        model = models[i] = this.get(models[i]);
-        if (!model) continue;
-        delete this._byId[model.id];
-        delete this._byId[model.cid];
-        index = this.indexOf(model);
-        this.models.splice(index, 1);
-        this.length--;
-        if (!options.silent) {
-          options.index = index;
-          model.trigger('remove', model, this, options);
-        }
-        this._removeReference(model, options);
+      models = singular ? [models] : models.slice();
+      var removed = this._removeModels(models, options);
+      if (!options.silent && removed.length) {
+        options.changes = {added: [], merged: [], removed: removed};
+        this.trigger('update', this, options);
       }
-      return singular ? models[0] : models;
+      return singular ? removed[0] : removed;
     },
 
     // Update a collection by `set`-ing a new list of models, adding new ones,
@@ -2247,89 +2557,114 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // already exist in the collection, as necessary. Similar to **Model#set**,
     // the core operation for updating the data contained by the collection.
     set: function(models, options) {
-      options = _.defaults({}, options, setOptions);
-      if (options.parse) models = this.parse(models, options);
+      if (models == null) return;
+
+      options = _.extend({}, setOptions, options);
+      if (options.parse && !this._isModel(models)) {
+        models = this.parse(models, options) || [];
+      }
+
       var singular = !_.isArray(models);
-      models = singular ? (models ? [models] : []) : _.clone(models);
-      var i, l, id, model, attrs, existing, sort;
+      models = singular ? [models] : models.slice();
+
       var at = options.at;
-      var targetModel = this.model;
-      var sortable = this.comparator && (at == null) && options.sort !== false;
+      if (at != null) at = +at;
+      if (at > this.length) at = this.length;
+      if (at < 0) at += this.length + 1;
+
+      var set = [];
+      var toAdd = [];
+      var toMerge = [];
+      var toRemove = [];
+      var modelMap = {};
+
+      var add = options.add;
+      var merge = options.merge;
+      var remove = options.remove;
+
+      var sort = false;
+      var sortable = this.comparator && at == null && options.sort !== false;
       var sortAttr = _.isString(this.comparator) ? this.comparator : null;
-      var toAdd = [], toRemove = [], modelMap = {};
-      var add = options.add, merge = options.merge, remove = options.remove;
-      var order = !sortable && add && remove ? [] : false;
 
       // Turn bare objects into model references, and prevent invalid models
       // from being added.
-      for (i = 0, l = models.length; i < l; i++) {
-        attrs = models[i] || {};
-        if (attrs instanceof Model) {
-          id = model = attrs;
-        } else {
-          id = attrs[targetModel.prototype.idAttribute || 'id'];
-        }
+      var model, i;
+      for (i = 0; i < models.length; i++) {
+        model = models[i];
 
         // If a duplicate is found, prevent it from being added and
         // optionally merge it into the existing model.
-        if (existing = this.get(id)) {
-          if (remove) modelMap[existing.cid] = true;
-          if (merge) {
-            attrs = attrs === model ? model.attributes : attrs;
+        var existing = this.get(model);
+        if (existing) {
+          if (merge && model !== existing) {
+            var attrs = this._isModel(model) ? model.attributes : model;
             if (options.parse) attrs = existing.parse(attrs, options);
             existing.set(attrs, options);
-            if (sortable && !sort && existing.hasChanged(sortAttr)) sort = true;
+            toMerge.push(existing);
+            if (sortable && !sort) sort = existing.hasChanged(sortAttr);
+          }
+          if (!modelMap[existing.cid]) {
+            modelMap[existing.cid] = true;
+            set.push(existing);
           }
           models[i] = existing;
 
         // If this is a new, valid model, push it to the `toAdd` list.
         } else if (add) {
-          model = models[i] = this._prepareModel(attrs, options);
-          if (!model) continue;
-          toAdd.push(model);
-          this._addReference(model, options);
+          model = models[i] = this._prepareModel(model, options);
+          if (model) {
+            toAdd.push(model);
+            this._addReference(model, options);
+            modelMap[model.cid] = true;
+            set.push(model);
+          }
         }
-
-        // Do not add multiple models with the same `id`.
-        model = existing || model;
-        if (order && (model.isNew() || !modelMap[model.id])) order.push(model);
-        modelMap[model.id] = true;
       }
 
-      // Remove nonexistent models if appropriate.
+      // Remove stale models.
       if (remove) {
-        for (i = 0, l = this.length; i < l; ++i) {
-          if (!modelMap[(model = this.models[i]).cid]) toRemove.push(model);
+        for (i = 0; i < this.length; i++) {
+          model = this.models[i];
+          if (!modelMap[model.cid]) toRemove.push(model);
         }
-        if (toRemove.length) this.remove(toRemove, options);
+        if (toRemove.length) this._removeModels(toRemove, options);
       }
 
       // See if sorting is needed, update `length` and splice in new models.
-      if (toAdd.length || (order && order.length)) {
+      var orderChanged = false;
+      var replace = !sortable && add && remove;
+      if (set.length && replace) {
+        orderChanged = this.length !== set.length || _.some(this.models, function(m, index) {
+          return m !== set[index];
+        });
+        this.models.length = 0;
+        splice(this.models, set, 0);
+        this.length = this.models.length;
+      } else if (toAdd.length) {
         if (sortable) sort = true;
-        this.length += toAdd.length;
-        if (at != null) {
-          for (i = 0, l = toAdd.length; i < l; i++) {
-            this.models.splice(at + i, 0, toAdd[i]);
-          }
-        } else {
-          if (order) this.models.length = 0;
-          var orderedModels = order || toAdd;
-          for (i = 0, l = orderedModels.length; i < l; i++) {
-            this.models.push(orderedModels[i]);
-          }
-        }
+        splice(this.models, toAdd, at == null ? this.length : at);
+        this.length = this.models.length;
       }
 
       // Silently sort the collection if appropriate.
       if (sort) this.sort({silent: true});
 
-      // Unless silenced, it's time to fire all appropriate add/sort events.
+      // Unless silenced, it's time to fire all appropriate add/sort/update events.
       if (!options.silent) {
-        for (i = 0, l = toAdd.length; i < l; i++) {
-          (model = toAdd[i]).trigger('add', model, this, options);
+        for (i = 0; i < toAdd.length; i++) {
+          if (at != null) options.index = at + i;
+          model = toAdd[i];
+          model.trigger('add', model, this, options);
         }
-        if (sort || (order && order.length)) this.trigger('sort', this, options);
+        if (sort || orderChanged) this.trigger('sort', this, options);
+        if (toAdd.length || toRemove.length || toMerge.length) {
+          options.changes = {
+            added: toAdd,
+            removed: toRemove,
+            merged: toMerge
+          };
+          this.trigger('update', this, options);
+        }
       }
 
       // Return the added (or merged) model (or models).
@@ -2341,8 +2676,8 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // any granular `add` or `remove` events. Fires `reset` when finished.
     // Useful for bulk operations and optimizations.
     reset: function(models, options) {
-      options || (options = {});
-      for (var i = 0, l = this.models.length; i < l; i++) {
+      options = options ? _.clone(options) : {};
+      for (var i = 0; i < this.models.length; i++) {
         this._removeReference(this.models[i], options);
       }
       options.previousModels = this.models;
@@ -2360,8 +2695,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Remove a model from the end of the collection.
     pop: function(options) {
       var model = this.at(this.length - 1);
-      this.remove(model, options);
-      return model;
+      return this.remove(model, options);
     },
 
     // Add a model to the beginning of the collection.
@@ -2372,8 +2706,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Remove a model from the beginning of the collection.
     shift: function(options) {
       var model = this.at(0);
-      this.remove(model, options);
-      return model;
+      return this.remove(model, options);
     },
 
     // Slice out a sub-array of models from the collection.
@@ -2381,27 +2714,30 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return slice.apply(this.models, arguments);
     },
 
-    // Get a model from the set by id.
+    // Get a model from the set by id, cid, model object with id or cid
+    // properties, or an attributes object that is transformed through modelId.
     get: function(obj) {
       if (obj == null) return void 0;
-      return this._byId[obj] || this._byId[obj.id] || this._byId[obj.cid];
+      return this._byId[obj] ||
+        this._byId[this.modelId(this._isModel(obj) ? obj.attributes : obj)] ||
+        obj.cid && this._byId[obj.cid];
+    },
+
+    // Returns `true` if the model is in the collection.
+    has: function(obj) {
+      return this.get(obj) != null;
     },
 
     // Get the model at the given index.
     at: function(index) {
+      if (index < 0) index += this.length;
       return this.models[index];
     },
 
     // Return models with matching attributes. Useful for simple cases of
     // `filter`.
     where: function(attrs, first) {
-      if (_.isEmpty(attrs)) return first ? void 0 : [];
-      return this[first ? 'find' : 'filter'](function(model) {
-        for (var key in attrs) {
-          if (attrs[key] !== model.get(key)) return false;
-        }
-        return true;
-      });
+      return this[first ? 'find' : 'filter'](attrs);
     },
 
     // Return the first model with matching attributes. Useful for simple cases
@@ -2414,37 +2750,39 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // normal circumstances, as the set will maintain sort order as each item
     // is added.
     sort: function(options) {
-      if (!this.comparator) throw new Error('Cannot sort a set without a comparator');
+      var comparator = this.comparator;
+      if (!comparator) throw new Error('Cannot sort a set without a comparator');
       options || (options = {});
 
-      // Run sort based on type of `comparator`.
-      if (_.isString(this.comparator) || this.comparator.length === 1) {
-        this.models = this.sortBy(this.comparator, this);
-      } else {
-        this.models.sort(_.bind(this.comparator, this));
-      }
+      var length = comparator.length;
+      if (_.isFunction(comparator)) comparator = comparator.bind(this);
 
+      // Run sort based on type of `comparator`.
+      if (length === 1 || _.isString(comparator)) {
+        this.models = this.sortBy(comparator);
+      } else {
+        this.models.sort(comparator);
+      }
       if (!options.silent) this.trigger('sort', this, options);
       return this;
     },
 
     // Pluck an attribute from each model in the collection.
     pluck: function(attr) {
-      return _.invoke(this.models, 'get', attr);
+      return this.map(attr + '');
     },
 
     // Fetch the default set of models for this collection, resetting the
     // collection when they arrive. If `reset: true` is passed, the response
     // data will be passed through the `reset` method instead of `set`.
     fetch: function(options) {
-      options = options ? _.clone(options) : {};
-      if (options.parse === void 0) options.parse = true;
+      options = _.extend({parse: true}, options);
       var success = options.success;
       var collection = this;
       options.success = function(resp) {
         var method = options.reset ? 'reset' : 'set';
         collection[method](resp, options);
-        if (success) success(collection, resp, options);
+        if (success) success.call(options.context, collection, resp, options);
         collection.trigger('sync', collection, resp, options);
       };
       wrapError(this, options);
@@ -2456,13 +2794,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // wait for the server to agree.
     create: function(model, options) {
       options = options ? _.clone(options) : {};
-      if (!(model = this._prepareModel(model, options))) return false;
-      if (!options.wait) this.add(model, options);
+      var wait = options.wait;
+      model = this._prepareModel(model, options);
+      if (!model) return false;
+      if (!wait) this.add(model, options);
       var collection = this;
       var success = options.success;
-      options.success = function(model, resp) {
-        if (options.wait) collection.add(model, options);
-        if (success) success(model, resp, options);
+      options.success = function(m, resp, callbackOpts) {
+        if (wait) collection.add(m, callbackOpts);
+        if (success) success.call(callbackOpts.context, m, resp, callbackOpts);
       };
       model.save(null, options);
       return model;
@@ -2476,7 +2816,30 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
     // Create a new collection with an identical list of models as this one.
     clone: function() {
-      return new this.constructor(this.models);
+      return new this.constructor(this.models, {
+        model: this.model,
+        comparator: this.comparator
+      });
+    },
+
+    // Define how to uniquely identify models in the collection.
+    modelId: function(attrs) {
+      return attrs[this.model.prototype.idAttribute || 'id'];
+    },
+
+    // Get an iterator of all models in this collection.
+    values: function() {
+      return new CollectionIterator(this, ITERATOR_VALUES);
+    },
+
+    // Get an iterator of all model IDs in this collection.
+    keys: function() {
+      return new CollectionIterator(this, ITERATOR_KEYS);
+    },
+
+    // Get an iterator of all [ID, model] tuples in this collection.
+    entries: function() {
+      return new CollectionIterator(this, ITERATOR_KEYSVALUES);
     },
 
     // Private method to reset all internal state. Called when the collection
@@ -2490,7 +2853,10 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Prepare a hash of attributes (or other model) to be added to this
     // collection.
     _prepareModel: function(attrs, options) {
-      if (attrs instanceof Model) return attrs;
+      if (this._isModel(attrs)) {
+        if (!attrs.collection) attrs.collection = this;
+        return attrs;
+      }
       options = options ? _.clone(options) : {};
       options.collection = this;
       var model = new this.model(attrs, options);
@@ -2499,16 +2865,53 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return false;
     },
 
+    // Internal method called by both remove and set.
+    _removeModels: function(models, options) {
+      var removed = [];
+      for (var i = 0; i < models.length; i++) {
+        var model = this.get(models[i]);
+        if (!model) continue;
+
+        var index = this.indexOf(model);
+        this.models.splice(index, 1);
+        this.length--;
+
+        // Remove references before triggering 'remove' event to prevent an
+        // infinite loop. #3693
+        delete this._byId[model.cid];
+        var id = this.modelId(model.attributes);
+        if (id != null) delete this._byId[id];
+
+        if (!options.silent) {
+          options.index = index;
+          model.trigger('remove', model, this, options);
+        }
+
+        removed.push(model);
+        this._removeReference(model, options);
+      }
+      return removed;
+    },
+
+    // Method for checking whether an object should be considered a model for
+    // the purposes of adding to the collection.
+    _isModel: function(model) {
+      return model instanceof Model;
+    },
+
     // Internal method to create a model's ties to a collection.
     _addReference: function(model, options) {
       this._byId[model.cid] = model;
-      if (model.id != null) this._byId[model.id] = model;
-      if (!model.collection) model.collection = this;
+      var id = this.modelId(model.attributes);
+      if (id != null) this._byId[id] = model;
       model.on('all', this._onModelEvent, this);
     },
 
     // Internal method to sever a model's ties to a collection.
     _removeReference: function(model, options) {
+      delete this._byId[model.cid];
+      var id = this.modelId(model.attributes);
+      if (id != null) delete this._byId[id];
       if (this === model.collection) delete model.collection;
       model.off('all', this._onModelEvent, this);
     },
@@ -2518,48 +2921,88 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // events simply proxy through. "add" and "remove" events that originate
     // in other collections are ignored.
     _onModelEvent: function(event, model, collection, options) {
-      if ((event === 'add' || event === 'remove') && collection !== this) return;
-      if (event === 'destroy') this.remove(model, options);
-      if (model && event === 'change:' + model.idAttribute) {
-        delete this._byId[model.previous(model.idAttribute)];
-        if (model.id != null) this._byId[model.id] = model;
+      if (model) {
+        if ((event === 'add' || event === 'remove') && collection !== this) return;
+        if (event === 'destroy') this.remove(model, options);
+        if (event === 'change') {
+          var prevId = this.modelId(model.previousAttributes());
+          var id = this.modelId(model.attributes);
+          if (prevId !== id) {
+            if (prevId != null) delete this._byId[prevId];
+            if (id != null) this._byId[id] = model;
+          }
+        }
       }
       this.trigger.apply(this, arguments);
     }
 
   });
 
-  // Underscore methods that we want to implement on the Collection.
-  // 90% of the core usefulness of Backbone Collections is actually implemented
-  // right here:
-  var methods = ['forEach', 'each', 'map', 'collect', 'reduce', 'foldl',
-    'inject', 'reduceRight', 'foldr', 'find', 'detect', 'filter', 'select',
-    'reject', 'every', 'all', 'some', 'any', 'include', 'contains', 'invoke',
-    'max', 'min', 'toArray', 'size', 'first', 'head', 'take', 'initial', 'rest',
-    'tail', 'drop', 'last', 'without', 'difference', 'indexOf', 'shuffle',
-    'lastIndexOf', 'isEmpty', 'chain', 'sample'];
+  // Defining an @@iterator method implements JavaScript's Iterable protocol.
+  // In modern ES2015 browsers, this value is found at Symbol.iterator.
+  /* global Symbol */
+  var $$iterator = typeof Symbol === 'function' && Symbol.iterator;
+  if ($$iterator) {
+    Collection.prototype[$$iterator] = Collection.prototype.values;
+  }
 
-  // Mix in each Underscore method as a proxy to `Collection#models`.
-  _.each(methods, function(method) {
-    Collection.prototype[method] = function() {
-      var args = slice.call(arguments);
-      args.unshift(this.models);
-      return _[method].apply(_, args);
+  // CollectionIterator
+  // ------------------
+
+  // A CollectionIterator implements JavaScript's Iterator protocol, allowing the
+  // use of `for of` loops in modern browsers and interoperation between
+  // Backbone.Collection and other JavaScript functions and third-party libraries
+  // which can operate on Iterables.
+  var CollectionIterator = function(collection, kind) {
+    this._collection = collection;
+    this._kind = kind;
+    this._index = 0;
+  };
+
+  // This "enum" defines the three possible kinds of values which can be emitted
+  // by a CollectionIterator that correspond to the values(), keys() and entries()
+  // methods on Collection, respectively.
+  var ITERATOR_VALUES = 1;
+  var ITERATOR_KEYS = 2;
+  var ITERATOR_KEYSVALUES = 3;
+
+  // All Iterators should themselves be Iterable.
+  if ($$iterator) {
+    CollectionIterator.prototype[$$iterator] = function() {
+      return this;
     };
-  });
+  }
 
-  // Underscore methods that take a property name as an argument.
-  var attributeMethods = ['groupBy', 'countBy', 'sortBy', 'indexBy'];
+  CollectionIterator.prototype.next = function() {
+    if (this._collection) {
 
-  // Use attributes instead of properties.
-  _.each(attributeMethods, function(method) {
-    Collection.prototype[method] = function(value, context) {
-      var iterator = _.isFunction(value) ? value : function(model) {
-        return model.get(value);
-      };
-      return _[method](this.models, iterator, context);
-    };
-  });
+      // Only continue iterating if the iterated collection is long enough.
+      if (this._index < this._collection.length) {
+        var model = this._collection.at(this._index);
+        this._index++;
+
+        // Construct a value depending on what kind of values should be iterated.
+        var value;
+        if (this._kind === ITERATOR_VALUES) {
+          value = model;
+        } else {
+          var id = this._collection.modelId(model.attributes);
+          if (this._kind === ITERATOR_KEYS) {
+            value = id;
+          } else { // ITERATOR_KEYSVALUES
+            value = [id, model];
+          }
+        }
+        return {value: value, done: false};
+      }
+
+      // Once exhausted, remove the reference to the collection so future
+      // calls to the next method always return done.
+      this._collection = void 0;
+    }
+
+    return {value: void 0, done: true};
+  };
 
   // Backbone.View
   // -------------
@@ -2576,17 +3019,16 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // if an existing element is not provided...
   var View = Backbone.View = function(options) {
     this.cid = _.uniqueId('view');
-    options || (options = {});
+    this.preinitialize.apply(this, arguments);
     _.extend(this, _.pick(options, viewOptions));
     this._ensureElement();
     this.initialize.apply(this, arguments);
-    this.delegateEvents();
   };
 
   // Cached regex to split keys for `delegate`.
   var delegateEventSplitter = /^(\S+)\s*(.*)$/;
 
-  // List of view options to be merged as properties.
+  // List of view options to be set as properties.
   var viewOptions = ['model', 'collection', 'el', 'id', 'attributes', 'className', 'tagName', 'events'];
 
   // Set up all inheritable **Backbone.View** properties and methods.
@@ -2600,6 +3042,10 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     $: function(selector) {
       return this.$el.find(selector);
     },
+
+    // preinitialize is an empty function by default. You can override it with a function
+    // or object.  preinitialize will run before any instantiation logic is run in the View
+    preinitialize: function(){},
 
     // Initialize is an empty function by default. Override it with your own
     // initialization logic.
@@ -2615,19 +3061,35 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Remove this view by taking the element out of the DOM, and removing any
     // applicable Backbone.Events listeners.
     remove: function() {
-      this.$el.remove();
+      this._removeElement();
       this.stopListening();
       return this;
     },
 
-    // Change the view's element (`this.el` property), including event
-    // re-delegation.
-    setElement: function(element, delegate) {
-      if (this.$el) this.undelegateEvents();
-      this.$el = element instanceof Backbone.$ ? element : Backbone.$(element);
-      this.el = this.$el[0];
-      if (delegate !== false) this.delegateEvents();
+    // Remove this view's element from the document and all event listeners
+    // attached to it. Exposed for subclasses using an alternative DOM
+    // manipulation API.
+    _removeElement: function() {
+      this.$el.remove();
+    },
+
+    // Change the view's element (`this.el` property) and re-delegate the
+    // view's events on the new element.
+    setElement: function(element) {
+      this.undelegateEvents();
+      this._setElement(element);
+      this.delegateEvents();
       return this;
+    },
+
+    // Creates the `this.el` and `this.$el` references for this view using the
+    // given `el`. `el` can be a CSS selector or an HTML string, a jQuery
+    // context or an element. Subclasses can override this to utilize an
+    // alternative DOM manipulation API and are only required to set the
+    // `this.el` property.
+    _setElement: function(el) {
+      this.$el = el instanceof Backbone.$ ? el : Backbone.$(el);
+      this.el = this.$el[0];
     },
 
     // Set callbacks, where `this.events` is a hash of
@@ -2643,35 +3105,47 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // pairs. Callbacks will be bound to the view, with `this` set properly.
     // Uses event delegation for efficiency.
     // Omitting the selector binds the event to `this.el`.
-    // This only works for delegate-able events: not `focus`, `blur`, and
-    // not `change`, `submit`, and `reset` in Internet Explorer.
     delegateEvents: function(events) {
-      if (!(events || (events = _.result(this, 'events')))) return this;
+      events || (events = _.result(this, 'events'));
+      if (!events) return this;
       this.undelegateEvents();
       for (var key in events) {
         var method = events[key];
-        if (!_.isFunction(method)) method = this[events[key]];
+        if (!_.isFunction(method)) method = this[method];
         if (!method) continue;
-
         var match = key.match(delegateEventSplitter);
-        var eventName = match[1], selector = match[2];
-        method = _.bind(method, this);
-        eventName += '.delegateEvents' + this.cid;
-        if (selector === '') {
-          this.$el.on(eventName, method);
-        } else {
-          this.$el.on(eventName, selector, method);
-        }
+        this.delegate(match[1], match[2], method.bind(this));
       }
       return this;
     },
 
-    // Clears all callbacks previously bound to the view with `delegateEvents`.
+    // Add a single event listener to the view's element (or a child element
+    // using `selector`). This only works for delegate-able events: not `focus`,
+    // `blur`, and not `change`, `submit`, and `reset` in Internet Explorer.
+    delegate: function(eventName, selector, listener) {
+      this.$el.on(eventName + '.delegateEvents' + this.cid, selector, listener);
+      return this;
+    },
+
+    // Clears all callbacks previously bound to the view by `delegateEvents`.
     // You usually don't need to use this, but may wish to if you have multiple
     // Backbone views attached to the same DOM element.
     undelegateEvents: function() {
-      this.$el.off('.delegateEvents' + this.cid);
+      if (this.$el) this.$el.off('.delegateEvents' + this.cid);
       return this;
+    },
+
+    // A finer-grained `undelegateEvents` for removing a single delegated event.
+    // `selector` and `listener` are both optional.
+    undelegate: function(eventName, selector, listener) {
+      this.$el.off(eventName + '.delegateEvents' + this.cid, selector, listener);
+      return this;
+    },
+
+    // Produces a DOM element to be assigned to your view. Exposed for
+    // subclasses using an alternative DOM manipulation API.
+    _createElement: function(tagName) {
+      return document.createElement(tagName);
     },
 
     // Ensure that the View has a DOM element to render into.
@@ -2683,13 +3157,107 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         var attrs = _.extend({}, _.result(this, 'attributes'));
         if (this.id) attrs.id = _.result(this, 'id');
         if (this.className) attrs['class'] = _.result(this, 'className');
-        var $el = Backbone.$('<' + _.result(this, 'tagName') + '>').attr(attrs);
-        this.setElement($el, false);
+        this.setElement(this._createElement(_.result(this, 'tagName')));
+        this._setAttributes(attrs);
       } else {
-        this.setElement(_.result(this, 'el'), false);
+        this.setElement(_.result(this, 'el'));
       }
+    },
+
+    // Set attributes from a hash on this view's element.  Exposed for
+    // subclasses using an alternative DOM manipulation API.
+    _setAttributes: function(attributes) {
+      this.$el.attr(attributes);
     }
 
+  });
+
+  // Proxy Backbone class methods to Underscore functions, wrapping the model's
+  // `attributes` object or collection's `models` array behind the scenes.
+  //
+  // collection.filter(function(model) { return model.get('age') > 10 });
+  // collection.each(this.addView);
+  //
+  // `Function#apply` can be slow so we use the method's arg count, if we know it.
+  var addMethod = function(base, length, method, attribute) {
+    switch (length) {
+      case 1: return function() {
+        return base[method](this[attribute]);
+      };
+      case 2: return function(value) {
+        return base[method](this[attribute], value);
+      };
+      case 3: return function(iteratee, context) {
+        return base[method](this[attribute], cb(iteratee, this), context);
+      };
+      case 4: return function(iteratee, defaultVal, context) {
+        return base[method](this[attribute], cb(iteratee, this), defaultVal, context);
+      };
+      default: return function() {
+        var args = slice.call(arguments);
+        args.unshift(this[attribute]);
+        return base[method].apply(base, args);
+      };
+    }
+  };
+
+  var addUnderscoreMethods = function(Class, base, methods, attribute) {
+    _.each(methods, function(length, method) {
+      if (base[method]) Class.prototype[method] = addMethod(base, length, method, attribute);
+    });
+  };
+
+  // Support `collection.sortBy('attr')` and `collection.findWhere({id: 1})`.
+  var cb = function(iteratee, instance) {
+    if (_.isFunction(iteratee)) return iteratee;
+    if (_.isObject(iteratee) && !instance._isModel(iteratee)) return modelMatcher(iteratee);
+    if (_.isString(iteratee)) return function(model) { return model.get(iteratee); };
+    return iteratee;
+  };
+  var modelMatcher = function(attrs) {
+    var matcher = _.matches(attrs);
+    return function(model) {
+      return matcher(model.attributes);
+    };
+  };
+
+  // Underscore methods that we want to implement on the Collection.
+  // 90% of the core usefulness of Backbone Collections is actually implemented
+  // right here:
+  var collectionMethods = {forEach: 3, each: 3, map: 3, collect: 3, reduce: 0,
+    foldl: 0, inject: 0, reduceRight: 0, foldr: 0, find: 3, detect: 3, filter: 3,
+    select: 3, reject: 3, every: 3, all: 3, some: 3, any: 3, include: 3, includes: 3,
+    contains: 3, invoke: 0, max: 3, min: 3, toArray: 1, size: 1, first: 3,
+    head: 3, take: 3, initial: 3, rest: 3, tail: 3, drop: 3, last: 3,
+    without: 0, difference: 0, indexOf: 3, shuffle: 1, lastIndexOf: 3,
+    isEmpty: 1, chain: 1, sample: 3, partition: 3, groupBy: 3, countBy: 3,
+    sortBy: 3, indexBy: 3, findIndex: 3, findLastIndex: 3};
+
+
+  // Underscore methods that we want to implement on the Model, mapped to the
+  // number of arguments they take.
+  var modelMethods = {keys: 1, values: 1, pairs: 1, invert: 1, pick: 0,
+    omit: 0, chain: 1, isEmpty: 1};
+
+  // Mix in each Underscore method as a proxy to `Collection#models`.
+
+  _.each([
+    [Collection, collectionMethods, 'models'],
+    [Model, modelMethods, 'attributes']
+  ], function(config) {
+    var Base = config[0],
+        methods = config[1],
+        attribute = config[2];
+
+    Base.mixin = function(obj) {
+      var mappings = _.reduce(_.functions(obj), function(memo, name) {
+        memo[name] = 0;
+        return memo;
+      }, {});
+      addUnderscoreMethods(Base, obj, mappings, attribute);
+    };
+
+    addUnderscoreMethods(Base, _, methods, attribute);
   });
 
   // Backbone.sync
@@ -2756,14 +3324,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       params.processData = false;
     }
 
-    // If we're sending a `PATCH` request, and we're in an old Internet Explorer
-    // that still has ActiveX enabled by default, override jQuery to use that
-    // for XHR instead. Remove this line when jQuery supports `PATCH` on IE8.
-    if (params.type === 'PATCH' && noXhrPatch) {
-      params.xhr = function() {
-        return new ActiveXObject("Microsoft.XMLHTTP");
-      };
-    }
+    // Pass along `textStatus` and `errorThrown` from jQuery.
+    var error = options.error;
+    options.error = function(xhr, textStatus, errorThrown) {
+      options.textStatus = textStatus;
+      options.errorThrown = errorThrown;
+      if (error) error.call(options.context, xhr, textStatus, errorThrown);
+    };
 
     // Make the request, allowing the user to override any Ajax options.
     var xhr = options.xhr = Backbone.ajax(_.extend(params, options));
@@ -2771,17 +3338,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     return xhr;
   };
 
-  var noXhrPatch =
-    typeof window !== 'undefined' && !!window.ActiveXObject &&
-      !(window.XMLHttpRequest && (new XMLHttpRequest).dispatchEvent);
-
   // Map from CRUD to HTTP for our default `Backbone.sync` implementation.
   var methodMap = {
-    'create': 'POST',
-    'update': 'PUT',
-    'patch':  'PATCH',
-    'delete': 'DELETE',
-    'read':   'GET'
+    create: 'POST',
+    update: 'PUT',
+    patch: 'PATCH',
+    delete: 'DELETE',
+    read: 'GET'
   };
 
   // Set the default implementation of `Backbone.ajax` to proxy through to `$`.
@@ -2797,6 +3360,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // matched. Creating a new one sets its `routes` hash, if not set statically.
   var Router = Backbone.Router = function(options) {
     options || (options = {});
+    this.preinitialize.apply(this, arguments);
     if (options.routes) this.routes = options.routes;
     this._bindRoutes();
     this.initialize.apply(this, arguments);
@@ -2811,6 +3375,10 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Set up all inheritable **Backbone.Router** properties and methods.
   _.extend(Router.prototype, Events, {
+
+    // preinitialize is an empty function by default. You can override it with a function
+    // or object.  preinitialize will run before any instantiation logic is run in the Router.
+    preinitialize: function(){},
 
     // Initialize is an empty function by default. Override it with your own
     // initialization logic.
@@ -2832,17 +3400,18 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       var router = this;
       Backbone.history.route(route, function(fragment) {
         var args = router._extractParameters(route, fragment);
-        router.execute(callback, args);
-        router.trigger.apply(router, ['route:' + name].concat(args));
-        router.trigger('route', name, args);
-        Backbone.history.trigger('route', router, name, args);
+        if (router.execute(callback, args, name) !== false) {
+          router.trigger.apply(router, ['route:' + name].concat(args));
+          router.trigger('route', name, args);
+          Backbone.history.trigger('route', router, name, args);
+        }
       });
       return this;
     },
 
     // Execute a route handler with the provided parameters.  This is an
     // excellent place to do pre-route setup or post-route cleanup.
-    execute: function(callback, args) {
+    execute: function(callback, args, name) {
       if (callback) callback.apply(this, args);
     },
 
@@ -2868,11 +3437,11 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // against the current location hash.
     _routeToRegExp: function(route) {
       route = route.replace(escapeRegExp, '\\$&')
-                   .replace(optionalParam, '(?:$1)?')
-                   .replace(namedParam, function(match, optional) {
-                     return optional ? match : '([^/?]+)';
-                   })
-                   .replace(splatParam, '([^?]*?)');
+        .replace(optionalParam, '(?:$1)?')
+        .replace(namedParam, function(match, optional) {
+          return optional ? match : '([^/?]+)';
+        })
+        .replace(splatParam, '([^?]*?)');
       return new RegExp('^' + route + '(?:\\?([\\s\\S]*))?$');
     },
 
@@ -2900,7 +3469,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // falls back to polling.
   var History = Backbone.History = function() {
     this.handlers = [];
-    _.bindAll(this, 'checkUrl');
+    this.checkUrl = this.checkUrl.bind(this);
 
     // Ensure that `History` can be used outside of the browser.
     if (typeof window !== 'undefined') {
@@ -2914,12 +3483,6 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
   // Cached regex for stripping leading and trailing slashes.
   var rootStripper = /^\/+|\/+$/g;
-
-  // Cached regex for detecting MSIE.
-  var isExplorer = /msie [\w.]+/;
-
-  // Cached regex for removing a trailing slash.
-  var trailingSlash = /\/$/;
 
   // Cached regex for stripping urls of hash.
   var pathStripper = /#.*$/;
@@ -2936,7 +3499,29 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
     // Are we at the app root?
     atRoot: function() {
-      return this.location.pathname.replace(/[^\/]$/, '$&/') === this.root;
+      var path = this.location.pathname.replace(/[^\/]$/, '$&/');
+      return path === this.root && !this.getSearch();
+    },
+
+    // Does the pathname match the root?
+    matchRoot: function() {
+      var path = this.decodeFragment(this.location.pathname);
+      var rootPath = path.slice(0, this.root.length - 1) + '/';
+      return rootPath === this.root;
+    },
+
+    // Unicode characters in `location.pathname` are percent encoded so they're
+    // decoded for comparison. `%25` should not be decoded since it may be part
+    // of an encoded parameter.
+    decodeFragment: function(fragment) {
+      return decodeURI(fragment.replace(/%25/g, '%2525'));
+    },
+
+    // In IE6, the hash fragment and search params are incorrect if the
+    // fragment contains `?`.
+    getSearch: function() {
+      var match = this.location.href.replace(/#.*/, '').match(/\?.+/);
+      return match ? match[0] : '';
     },
 
     // Gets the true hash value. Cannot use location.hash directly due to bug
@@ -2946,14 +3531,19 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       return match ? match[1] : '';
     },
 
-    // Get the cross-browser normalized URL fragment, either from the URL,
-    // the hash, or the override.
-    getFragment: function(fragment, forcePushState) {
+    // Get the pathname and search params, without the root.
+    getPath: function() {
+      var path = this.decodeFragment(
+        this.location.pathname + this.getSearch()
+      ).slice(this.root.length - 1);
+      return path.charAt(0) === '/' ? path.slice(1) : path;
+    },
+
+    // Get the cross-browser normalized URL fragment from the path or hash.
+    getFragment: function(fragment) {
       if (fragment == null) {
-        if (this._hasPushState || !this._wantsHashChange || forcePushState) {
-          fragment = decodeURI(this.location.pathname + this.location.search);
-          var root = this.root.replace(trailingSlash, '');
-          if (!fragment.indexOf(root)) fragment = fragment.slice(root.length);
+        if (this._usePushState || !this._wantsHashChange) {
+          fragment = this.getPath();
         } else {
           fragment = this.getHash();
         }
@@ -2964,7 +3554,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Start the hash change handling, returning `true` if the current URL matches
     // an existing route, and `false` otherwise.
     start: function(options) {
-      if (History.started) throw new Error("Backbone.history has already been started");
+      if (History.started) throw new Error('Backbone.history has already been started');
       History.started = true;
 
       // Figure out the initial configuration. Do we need an iframe?
@@ -2972,35 +3562,15 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       this.options          = _.extend({root: '/'}, this.options, options);
       this.root             = this.options.root;
       this._wantsHashChange = this.options.hashChange !== false;
+      this._hasHashChange   = 'onhashchange' in window && (document.documentMode === void 0 || document.documentMode > 7);
+      this._useHashChange   = this._wantsHashChange && this._hasHashChange;
       this._wantsPushState  = !!this.options.pushState;
-      this._hasPushState    = !!(this.options.pushState && this.history && this.history.pushState);
-      var fragment          = this.getFragment();
-      var docMode           = document.documentMode;
-      var oldIE             = (isExplorer.exec(navigator.userAgent.toLowerCase()) && (!docMode || docMode <= 7));
+      this._hasPushState    = !!(this.history && this.history.pushState);
+      this._usePushState    = this._wantsPushState && this._hasPushState;
+      this.fragment         = this.getFragment();
 
       // Normalize root to always include a leading and trailing slash.
       this.root = ('/' + this.root + '/').replace(rootStripper, '/');
-
-      if (oldIE && this._wantsHashChange) {
-        var frame = Backbone.$('<iframe src="javascript:0" tabindex="-1">');
-        this.iframe = frame.hide().appendTo('body')[0].contentWindow;
-        this.navigate(fragment);
-      }
-
-      // Depending on whether we're using pushState or hashes, and whether
-      // 'onhashchange' is supported, determine how we check the URL state.
-      if (this._hasPushState) {
-        Backbone.$(window).on('popstate', this.checkUrl);
-      } else if (this._wantsHashChange && ('onhashchange' in window) && !oldIE) {
-        Backbone.$(window).on('hashchange', this.checkUrl);
-      } else if (this._wantsHashChange) {
-        this._checkUrlInterval = setInterval(this.checkUrl, this.interval);
-      }
-
-      // Determine if we need to change the base url, for a pushState link
-      // opened by a non-pushState browser.
-      this.fragment = fragment;
-      var loc = this.location;
 
       // Transition from hashChange to pushState or vice versa if both are
       // requested.
@@ -3009,18 +3579,48 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
         // If we've started off with a route from a `pushState`-enabled
         // browser, but we're currently in a browser that doesn't support it...
         if (!this._hasPushState && !this.atRoot()) {
-          this.fragment = this.getFragment(null, true);
-          this.location.replace(this.root + '#' + this.fragment);
+          var rootPath = this.root.slice(0, -1) || '/';
+          this.location.replace(rootPath + '#' + this.getPath());
           // Return immediately as browser will do redirect to new url
           return true;
 
         // Or if we've started out with a hash-based route, but we're currently
         // in a browser where it could be `pushState`-based instead...
-        } else if (this._hasPushState && this.atRoot() && loc.hash) {
-          this.fragment = this.getHash().replace(routeStripper, '');
-          this.history.replaceState({}, document.title, this.root + this.fragment);
+        } else if (this._hasPushState && this.atRoot()) {
+          this.navigate(this.getHash(), {replace: true});
         }
 
+      }
+
+      // Proxy an iframe to handle location events if the browser doesn't
+      // support the `hashchange` event, HTML5 history, or the user wants
+      // `hashChange` but not `pushState`.
+      if (!this._hasHashChange && this._wantsHashChange && !this._usePushState) {
+        this.iframe = document.createElement('iframe');
+        this.iframe.src = 'javascript:0';
+        this.iframe.style.display = 'none';
+        this.iframe.tabIndex = -1;
+        var body = document.body;
+        // Using `appendChild` will throw on IE < 9 if the document is not ready.
+        var iWindow = body.insertBefore(this.iframe, body.firstChild).contentWindow;
+        iWindow.document.open();
+        iWindow.document.close();
+        iWindow.location.hash = '#' + this.fragment;
+      }
+
+      // Add a cross-platform `addEventListener` shim for older browsers.
+      var addEventListener = window.addEventListener || function(eventName, listener) {
+        return attachEvent('on' + eventName, listener);
+      };
+
+      // Depending on whether we're using pushState or hashes, and whether
+      // 'onhashchange' is supported, determine how we check the URL state.
+      if (this._usePushState) {
+        addEventListener('popstate', this.checkUrl, false);
+      } else if (this._useHashChange && !this.iframe) {
+        addEventListener('hashchange', this.checkUrl, false);
+      } else if (this._wantsHashChange) {
+        this._checkUrlInterval = setInterval(this.checkUrl, this.interval);
       }
 
       if (!this.options.silent) return this.loadUrl();
@@ -3029,7 +3629,25 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // Disable Backbone.history, perhaps temporarily. Not useful in a real app,
     // but possibly useful for unit testing Routers.
     stop: function() {
-      Backbone.$(window).off('popstate', this.checkUrl).off('hashchange', this.checkUrl);
+      // Add a cross-platform `removeEventListener` shim for older browsers.
+      var removeEventListener = window.removeEventListener || function(eventName, listener) {
+        return detachEvent('on' + eventName, listener);
+      };
+
+      // Remove window listeners.
+      if (this._usePushState) {
+        removeEventListener('popstate', this.checkUrl, false);
+      } else if (this._useHashChange && !this.iframe) {
+        removeEventListener('hashchange', this.checkUrl, false);
+      }
+
+      // Clean up the iframe if necessary.
+      if (this.iframe) {
+        document.body.removeChild(this.iframe);
+        this.iframe = null;
+      }
+
+      // Some environments will throw when clearing an undefined interval.
       if (this._checkUrlInterval) clearInterval(this._checkUrlInterval);
       History.started = false;
     },
@@ -3044,9 +3662,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // calls `loadUrl`, normalizing across the hidden iframe.
     checkUrl: function(e) {
       var current = this.getFragment();
+
+      // If the user pressed the back button, the iframe's hash will have
+      // changed and we should use that for comparison.
       if (current === this.fragment && this.iframe) {
-        current = this.getFragment(this.getHash(this.iframe));
+        current = this.getHash(this.iframe.contentWindow);
       }
+
       if (current === this.fragment) return false;
       if (this.iframe) this.navigate(current);
       this.loadUrl();
@@ -3056,8 +3678,10 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     // match, returns `true`. If no defined routes matches the fragment,
     // returns `false`.
     loadUrl: function(fragment) {
+      // If the root doesn't match, no routes can match either.
+      if (!this.matchRoot()) return false;
       fragment = this.fragment = this.getFragment(fragment);
-      return _.any(this.handlers, function(handler) {
+      return _.some(this.handlers, function(handler) {
         if (handler.route.test(fragment)) {
           handler.callback(fragment);
           return true;
@@ -3076,31 +3700,45 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
       if (!History.started) return false;
       if (!options || options === true) options = {trigger: !!options};
 
-      var url = this.root + (fragment = this.getFragment(fragment || ''));
-
-      // Strip the hash for matching.
-      fragment = fragment.replace(pathStripper, '');
-
-      if (this.fragment === fragment) return;
-      this.fragment = fragment;
+      // Normalize the fragment.
+      fragment = this.getFragment(fragment || '');
 
       // Don't include a trailing slash on the root.
-      if (fragment === '' && url !== '/') url = url.slice(0, -1);
+      var rootPath = this.root;
+      if (fragment === '' || fragment.charAt(0) === '?') {
+        rootPath = rootPath.slice(0, -1) || '/';
+      }
+      var url = rootPath + fragment;
+
+      // Strip the fragment of the query and hash for matching.
+      fragment = fragment.replace(pathStripper, '');
+
+      // Decode for matching.
+      var decodedFragment = this.decodeFragment(fragment);
+
+      if (this.fragment === decodedFragment) return;
+      this.fragment = decodedFragment;
 
       // If pushState is available, we use it to set the fragment as a real URL.
-      if (this._hasPushState) {
+      if (this._usePushState) {
         this.history[options.replace ? 'replaceState' : 'pushState']({}, document.title, url);
 
       // If hash changes haven't been explicitly disabled, update the hash
       // fragment to store history.
       } else if (this._wantsHashChange) {
         this._updateHash(this.location, fragment, options.replace);
-        if (this.iframe && (fragment !== this.getFragment(this.getHash(this.iframe)))) {
+        if (this.iframe && fragment !== this.getHash(this.iframe.contentWindow)) {
+          var iWindow = this.iframe.contentWindow;
+
           // Opening and closing the iframe tricks IE7 and earlier to push a
           // history entry on hash-tag change.  When replace is true, we don't
           // want this.
-          if(!options.replace) this.iframe.document.open().close();
-          this._updateHash(this.iframe.location, fragment, options.replace);
+          if (!options.replace) {
+            iWindow.document.open();
+            iWindow.document.close();
+          }
+
+          this._updateHash(iWindow.location, fragment, options.replace);
         }
 
       // If you've told us that you explicitly don't want fallback hashchange-
@@ -3131,7 +3769,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   // Helpers
   // -------
 
-  // Helper function to correctly set up the prototype chain, for subclasses.
+  // Helper function to correctly set up the prototype chain for subclasses.
   // Similar to `goog.inherits`, but uses a hash of prototype properties and
   // class properties to be extended.
   var extend = function(protoProps, staticProps) {
@@ -3140,7 +3778,7 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
 
     // The constructor function for the new subclass is either defined by you
     // (the "constructor" property in your `extend` definition), or defaulted
-    // by us to simply call the parent's constructor.
+    // by us to simply call the parent constructor.
     if (protoProps && _.has(protoProps, 'constructor')) {
       child = protoProps.constructor;
     } else {
@@ -3151,14 +3789,9 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
     _.extend(child, parent, staticProps);
 
     // Set the prototype chain to inherit from `parent`, without calling
-    // `parent`'s constructor function.
-    var Surrogate = function(){ this.constructor = child; };
-    Surrogate.prototype = parent.prototype;
-    child.prototype = new Surrogate;
-
-    // Add prototype properties (instance properties) to the subclass,
-    // if supplied.
-    if (protoProps) _.extend(child.prototype, protoProps);
+    // `parent`'s constructor function and add the prototype properties.
+    child.prototype = _.create(parent.prototype, protoProps);
+    child.prototype.constructor = child;
 
     // Set a convenience property in case the parent's prototype is needed
     // later.
@@ -3179,14 +3812,13 @@ define('modules/api',['sdk', 'jquery', 'hyprlive'], function (Mozu, $, Hypr) {
   var wrapError = function(model, options) {
     var error = options.error;
     options.error = function(resp) {
-      if (error) error(model, resp, options);
+      if (error) error.call(options.context, model, resp, options);
       model.trigger('error', model, resp, options);
     };
   };
 
   return Backbone;
-
-}));
+});
 
 /**
  * Adds builtin validation features to BackboneJS Models, customized to connect
@@ -5393,52 +6025,1592 @@ define('modules/backbone-mozu',[
     return Backbone;
 });
 
+/*!
+ * Bootstrap v3.3.7 (http://getbootstrap.com)
+ * Copyright 2011-2016 Twitter, Inc.
+ * Licensed under the MIT license
+ */
+if("undefined"==typeof jQuery)throw new Error("Bootstrap's JavaScript requires jQuery");+function(a){var b=a.fn.jquery.split(" ")[0].split(".");if(b[0]<2&&b[1]<9||1==b[0]&&9==b[1]&&b[2]<1||b[0]>3)throw new Error("Bootstrap's JavaScript requires jQuery version 1.9.1 or higher, but lower than version 4")}(jQuery),+function(a){function b(){var a=document.createElement("bootstrap"),b={WebkitTransition:"webkitTransitionEnd",MozTransition:"transitionend",OTransition:"oTransitionEnd otransitionend",transition:"transitionend"};for(var c in b)if(void 0!==a.style[c])return{end:b[c]};return!1}a.fn.emulateTransitionEnd=function(b){var c=!1,d=this;a(this).one("bsTransitionEnd",function(){c=!0});var e=function(){c||a(d).trigger(a.support.transition.end)};return setTimeout(e,b),this},a(function(){a.support.transition=b(),a.support.transition&&(a.event.special.bsTransitionEnd={bindType:a.support.transition.end,delegateType:a.support.transition.end,handle:function(b){if(a(b.target).is(this))return b.handleObj.handler.apply(this,arguments)}})})}(jQuery),+function(a){function b(b){return this.each(function(){var c=a(this),e=c.data("bs.alert");e||c.data("bs.alert",e=new d(this)),"string"==typeof b&&e[b].call(c)})}var c='[data-dismiss="alert"]',d=function(b){a(b).on("click",c,this.close)};d.VERSION="3.3.7",d.TRANSITION_DURATION=150,d.prototype.close=function(b){function c(){g.detach().trigger("closed.bs.alert").remove()}var e=a(this),f=e.attr("data-target");f||(f=e.attr("href"),f=f&&f.replace(/.*(?=#[^\s]*$)/,""));var g=a("#"===f?[]:f);b&&b.preventDefault(),g.length||(g=e.closest(".alert")),g.trigger(b=a.Event("close.bs.alert")),b.isDefaultPrevented()||(g.removeClass("in"),a.support.transition&&g.hasClass("fade")?g.one("bsTransitionEnd",c).emulateTransitionEnd(d.TRANSITION_DURATION):c())};var e=a.fn.alert;a.fn.alert=b,a.fn.alert.Constructor=d,a.fn.alert.noConflict=function(){return a.fn.alert=e,this},a(document).on("click.bs.alert.data-api",c,d.prototype.close)}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.button"),f="object"==typeof b&&b;e||d.data("bs.button",e=new c(this,f)),"toggle"==b?e.toggle():b&&e.setState(b)})}var c=function(b,d){this.$element=a(b),this.options=a.extend({},c.DEFAULTS,d),this.isLoading=!1};c.VERSION="3.3.7",c.DEFAULTS={loadingText:"loading..."},c.prototype.setState=function(b){var c="disabled",d=this.$element,e=d.is("input")?"val":"html",f=d.data();b+="Text",null==f.resetText&&d.data("resetText",d[e]()),setTimeout(a.proxy(function(){d[e](null==f[b]?this.options[b]:f[b]),"loadingText"==b?(this.isLoading=!0,d.addClass(c).attr(c,c).prop(c,!0)):this.isLoading&&(this.isLoading=!1,d.removeClass(c).removeAttr(c).prop(c,!1))},this),0)},c.prototype.toggle=function(){var a=!0,b=this.$element.closest('[data-toggle="buttons"]');if(b.length){var c=this.$element.find("input");"radio"==c.prop("type")?(c.prop("checked")&&(a=!1),b.find(".active").removeClass("active"),this.$element.addClass("active")):"checkbox"==c.prop("type")&&(c.prop("checked")!==this.$element.hasClass("active")&&(a=!1),this.$element.toggleClass("active")),c.prop("checked",this.$element.hasClass("active")),a&&c.trigger("change")}else this.$element.attr("aria-pressed",!this.$element.hasClass("active")),this.$element.toggleClass("active")};var d=a.fn.button;a.fn.button=b,a.fn.button.Constructor=c,a.fn.button.noConflict=function(){return a.fn.button=d,this},a(document).on("click.bs.button.data-api",'[data-toggle^="button"]',function(c){var d=a(c.target).closest(".btn");b.call(d,"toggle"),a(c.target).is('input[type="radio"], input[type="checkbox"]')||(c.preventDefault(),d.is("input,button")?d.trigger("focus"):d.find("input:visible,button:visible").first().trigger("focus"))}).on("focus.bs.button.data-api blur.bs.button.data-api",'[data-toggle^="button"]',function(b){a(b.target).closest(".btn").toggleClass("focus",/^focus(in)?$/.test(b.type))})}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.carousel"),f=a.extend({},c.DEFAULTS,d.data(),"object"==typeof b&&b),g="string"==typeof b?b:f.slide;e||d.data("bs.carousel",e=new c(this,f)),"number"==typeof b?e.to(b):g?e[g]():f.interval&&e.pause().cycle()})}var c=function(b,c){this.$element=a(b),this.$indicators=this.$element.find(".carousel-indicators"),this.options=c,this.paused=null,this.sliding=null,this.interval=null,this.$active=null,this.$items=null,this.options.keyboard&&this.$element.on("keydown.bs.carousel",a.proxy(this.keydown,this)),"hover"==this.options.pause&&!("ontouchstart"in document.documentElement)&&this.$element.on("mouseenter.bs.carousel",a.proxy(this.pause,this)).on("mouseleave.bs.carousel",a.proxy(this.cycle,this))};c.VERSION="3.3.7",c.TRANSITION_DURATION=600,c.DEFAULTS={interval:5e3,pause:"hover",wrap:!0,keyboard:!0},c.prototype.keydown=function(a){if(!/input|textarea/i.test(a.target.tagName)){switch(a.which){case 37:this.prev();break;case 39:this.next();break;default:return}a.preventDefault()}},c.prototype.cycle=function(b){return b||(this.paused=!1),this.interval&&clearInterval(this.interval),this.options.interval&&!this.paused&&(this.interval=setInterval(a.proxy(this.next,this),this.options.interval)),this},c.prototype.getItemIndex=function(a){return this.$items=a.parent().children(".item"),this.$items.index(a||this.$active)},c.prototype.getItemForDirection=function(a,b){var c=this.getItemIndex(b),d="prev"==a&&0===c||"next"==a&&c==this.$items.length-1;if(d&&!this.options.wrap)return b;var e="prev"==a?-1:1,f=(c+e)%this.$items.length;return this.$items.eq(f)},c.prototype.to=function(a){var b=this,c=this.getItemIndex(this.$active=this.$element.find(".item.active"));if(!(a>this.$items.length-1||a<0))return this.sliding?this.$element.one("slid.bs.carousel",function(){b.to(a)}):c==a?this.pause().cycle():this.slide(a>c?"next":"prev",this.$items.eq(a))},c.prototype.pause=function(b){return b||(this.paused=!0),this.$element.find(".next, .prev").length&&a.support.transition&&(this.$element.trigger(a.support.transition.end),this.cycle(!0)),this.interval=clearInterval(this.interval),this},c.prototype.next=function(){if(!this.sliding)return this.slide("next")},c.prototype.prev=function(){if(!this.sliding)return this.slide("prev")},c.prototype.slide=function(b,d){var e=this.$element.find(".item.active"),f=d||this.getItemForDirection(b,e),g=this.interval,h="next"==b?"left":"right",i=this;if(f.hasClass("active"))return this.sliding=!1;var j=f[0],k=a.Event("slide.bs.carousel",{relatedTarget:j,direction:h});if(this.$element.trigger(k),!k.isDefaultPrevented()){if(this.sliding=!0,g&&this.pause(),this.$indicators.length){this.$indicators.find(".active").removeClass("active");var l=a(this.$indicators.children()[this.getItemIndex(f)]);l&&l.addClass("active")}var m=a.Event("slid.bs.carousel",{relatedTarget:j,direction:h});return a.support.transition&&this.$element.hasClass("slide")?(f.addClass(b),f[0].offsetWidth,e.addClass(h),f.addClass(h),e.one("bsTransitionEnd",function(){f.removeClass([b,h].join(" ")).addClass("active"),e.removeClass(["active",h].join(" ")),i.sliding=!1,setTimeout(function(){i.$element.trigger(m)},0)}).emulateTransitionEnd(c.TRANSITION_DURATION)):(e.removeClass("active"),f.addClass("active"),this.sliding=!1,this.$element.trigger(m)),g&&this.cycle(),this}};var d=a.fn.carousel;a.fn.carousel=b,a.fn.carousel.Constructor=c,a.fn.carousel.noConflict=function(){return a.fn.carousel=d,this};var e=function(c){var d,e=a(this),f=a(e.attr("data-target")||(d=e.attr("href"))&&d.replace(/.*(?=#[^\s]+$)/,""));if(f.hasClass("carousel")){var g=a.extend({},f.data(),e.data()),h=e.attr("data-slide-to");h&&(g.interval=!1),b.call(f,g),h&&f.data("bs.carousel").to(h),c.preventDefault()}};a(document).on("click.bs.carousel.data-api","[data-slide]",e).on("click.bs.carousel.data-api","[data-slide-to]",e),a(window).on("load",function(){a('[data-ride="carousel"]').each(function(){var c=a(this);b.call(c,c.data())})})}(jQuery),+function(a){function b(b){var c,d=b.attr("data-target")||(c=b.attr("href"))&&c.replace(/.*(?=#[^\s]+$)/,"");return a(d)}function c(b){return this.each(function(){var c=a(this),e=c.data("bs.collapse"),f=a.extend({},d.DEFAULTS,c.data(),"object"==typeof b&&b);!e&&f.toggle&&/show|hide/.test(b)&&(f.toggle=!1),e||c.data("bs.collapse",e=new d(this,f)),"string"==typeof b&&e[b]()})}var d=function(b,c){this.$element=a(b),this.options=a.extend({},d.DEFAULTS,c),this.$trigger=a('[data-toggle="collapse"][href="#'+b.id+'"],[data-toggle="collapse"][data-target="#'+b.id+'"]'),this.transitioning=null,this.options.parent?this.$parent=this.getParent():this.addAriaAndCollapsedClass(this.$element,this.$trigger),this.options.toggle&&this.toggle()};d.VERSION="3.3.7",d.TRANSITION_DURATION=350,d.DEFAULTS={toggle:!0},d.prototype.dimension=function(){var a=this.$element.hasClass("width");return a?"width":"height"},d.prototype.show=function(){if(!this.transitioning&&!this.$element.hasClass("in")){var b,e=this.$parent&&this.$parent.children(".panel").children(".in, .collapsing");if(!(e&&e.length&&(b=e.data("bs.collapse"),b&&b.transitioning))){var f=a.Event("show.bs.collapse");if(this.$element.trigger(f),!f.isDefaultPrevented()){e&&e.length&&(c.call(e,"hide"),b||e.data("bs.collapse",null));var g=this.dimension();this.$element.removeClass("collapse").addClass("collapsing")[g](0).attr("aria-expanded",!0),this.$trigger.removeClass("collapsed").attr("aria-expanded",!0),this.transitioning=1;var h=function(){this.$element.removeClass("collapsing").addClass("collapse in")[g](""),this.transitioning=0,this.$element.trigger("shown.bs.collapse")};if(!a.support.transition)return h.call(this);var i=a.camelCase(["scroll",g].join("-"));this.$element.one("bsTransitionEnd",a.proxy(h,this)).emulateTransitionEnd(d.TRANSITION_DURATION)[g](this.$element[0][i])}}}},d.prototype.hide=function(){if(!this.transitioning&&this.$element.hasClass("in")){var b=a.Event("hide.bs.collapse");if(this.$element.trigger(b),!b.isDefaultPrevented()){var c=this.dimension();this.$element[c](this.$element[c]())[0].offsetHeight,this.$element.addClass("collapsing").removeClass("collapse in").attr("aria-expanded",!1),this.$trigger.addClass("collapsed").attr("aria-expanded",!1),this.transitioning=1;var e=function(){this.transitioning=0,this.$element.removeClass("collapsing").addClass("collapse").trigger("hidden.bs.collapse")};return a.support.transition?void this.$element[c](0).one("bsTransitionEnd",a.proxy(e,this)).emulateTransitionEnd(d.TRANSITION_DURATION):e.call(this)}}},d.prototype.toggle=function(){this[this.$element.hasClass("in")?"hide":"show"]()},d.prototype.getParent=function(){return a(this.options.parent).find('[data-toggle="collapse"][data-parent="'+this.options.parent+'"]').each(a.proxy(function(c,d){var e=a(d);this.addAriaAndCollapsedClass(b(e),e)},this)).end()},d.prototype.addAriaAndCollapsedClass=function(a,b){var c=a.hasClass("in");a.attr("aria-expanded",c),b.toggleClass("collapsed",!c).attr("aria-expanded",c)};var e=a.fn.collapse;a.fn.collapse=c,a.fn.collapse.Constructor=d,a.fn.collapse.noConflict=function(){return a.fn.collapse=e,this},a(document).on("click.bs.collapse.data-api",'[data-toggle="collapse"]',function(d){var e=a(this);e.attr("data-target")||d.preventDefault();var f=b(e),g=f.data("bs.collapse"),h=g?"toggle":e.data();c.call(f,h)})}(jQuery),+function(a){function b(b){var c=b.attr("data-target");c||(c=b.attr("href"),c=c&&/#[A-Za-z]/.test(c)&&c.replace(/.*(?=#[^\s]*$)/,""));var d=c&&a(c);return d&&d.length?d:b.parent()}function c(c){c&&3===c.which||(a(e).remove(),a(f).each(function(){var d=a(this),e=b(d),f={relatedTarget:this};e.hasClass("open")&&(c&&"click"==c.type&&/input|textarea/i.test(c.target.tagName)&&a.contains(e[0],c.target)||(e.trigger(c=a.Event("hide.bs.dropdown",f)),c.isDefaultPrevented()||(d.attr("aria-expanded","false"),e.removeClass("open").trigger(a.Event("hidden.bs.dropdown",f)))))}))}function d(b){return this.each(function(){var c=a(this),d=c.data("bs.dropdown");d||c.data("bs.dropdown",d=new g(this)),"string"==typeof b&&d[b].call(c)})}var e=".dropdown-backdrop",f='[data-toggle="dropdown"]',g=function(b){a(b).on("click.bs.dropdown",this.toggle)};g.VERSION="3.3.7",g.prototype.toggle=function(d){var e=a(this);if(!e.is(".disabled, :disabled")){var f=b(e),g=f.hasClass("open");if(c(),!g){"ontouchstart"in document.documentElement&&!f.closest(".navbar-nav").length&&a(document.createElement("div")).addClass("dropdown-backdrop").insertAfter(a(this)).on("click",c);var h={relatedTarget:this};if(f.trigger(d=a.Event("show.bs.dropdown",h)),d.isDefaultPrevented())return;e.trigger("focus").attr("aria-expanded","true"),f.toggleClass("open").trigger(a.Event("shown.bs.dropdown",h))}return!1}},g.prototype.keydown=function(c){if(/(38|40|27|32)/.test(c.which)&&!/input|textarea/i.test(c.target.tagName)){var d=a(this);if(c.preventDefault(),c.stopPropagation(),!d.is(".disabled, :disabled")){var e=b(d),g=e.hasClass("open");if(!g&&27!=c.which||g&&27==c.which)return 27==c.which&&e.find(f).trigger("focus"),d.trigger("click");var h=" li:not(.disabled):visible a",i=e.find(".dropdown-menu"+h);if(i.length){var j=i.index(c.target);38==c.which&&j>0&&j--,40==c.which&&j<i.length-1&&j++,~j||(j=0),i.eq(j).trigger("focus")}}}};var h=a.fn.dropdown;a.fn.dropdown=d,a.fn.dropdown.Constructor=g,a.fn.dropdown.noConflict=function(){return a.fn.dropdown=h,this},a(document).on("click.bs.dropdown.data-api",c).on("click.bs.dropdown.data-api",".dropdown form",function(a){a.stopPropagation()}).on("click.bs.dropdown.data-api",f,g.prototype.toggle).on("keydown.bs.dropdown.data-api",f,g.prototype.keydown).on("keydown.bs.dropdown.data-api",".dropdown-menu",g.prototype.keydown)}(jQuery),+function(a){function b(b,d){return this.each(function(){var e=a(this),f=e.data("bs.modal"),g=a.extend({},c.DEFAULTS,e.data(),"object"==typeof b&&b);f||e.data("bs.modal",f=new c(this,g)),"string"==typeof b?f[b](d):g.show&&f.show(d)})}var c=function(b,c){this.options=c,this.$body=a(document.body),this.$element=a(b),this.$dialog=this.$element.find(".modal-dialog"),this.$backdrop=null,this.isShown=null,this.originalBodyPad=null,this.scrollbarWidth=0,this.ignoreBackdropClick=!1,this.options.remote&&this.$element.find(".modal-content").load(this.options.remote,a.proxy(function(){this.$element.trigger("loaded.bs.modal")},this))};c.VERSION="3.3.7",c.TRANSITION_DURATION=300,c.BACKDROP_TRANSITION_DURATION=150,c.DEFAULTS={backdrop:!0,keyboard:!0,show:!0},c.prototype.toggle=function(a){return this.isShown?this.hide():this.show(a)},c.prototype.show=function(b){var d=this,e=a.Event("show.bs.modal",{relatedTarget:b});this.$element.trigger(e),this.isShown||e.isDefaultPrevented()||(this.isShown=!0,this.checkScrollbar(),this.setScrollbar(),this.$body.addClass("modal-open"),this.escape(),this.resize(),this.$element.on("click.dismiss.bs.modal",'[data-dismiss="modal"]',a.proxy(this.hide,this)),this.$dialog.on("mousedown.dismiss.bs.modal",function(){d.$element.one("mouseup.dismiss.bs.modal",function(b){a(b.target).is(d.$element)&&(d.ignoreBackdropClick=!0)})}),this.backdrop(function(){var e=a.support.transition&&d.$element.hasClass("fade");d.$element.parent().length||d.$element.appendTo(d.$body),d.$element.show().scrollTop(0),d.adjustDialog(),e&&d.$element[0].offsetWidth,d.$element.addClass("in"),d.enforceFocus();var f=a.Event("shown.bs.modal",{relatedTarget:b});e?d.$dialog.one("bsTransitionEnd",function(){d.$element.trigger("focus").trigger(f)}).emulateTransitionEnd(c.TRANSITION_DURATION):d.$element.trigger("focus").trigger(f)}))},c.prototype.hide=function(b){b&&b.preventDefault(),b=a.Event("hide.bs.modal"),this.$element.trigger(b),this.isShown&&!b.isDefaultPrevented()&&(this.isShown=!1,this.escape(),this.resize(),a(document).off("focusin.bs.modal"),this.$element.removeClass("in").off("click.dismiss.bs.modal").off("mouseup.dismiss.bs.modal"),this.$dialog.off("mousedown.dismiss.bs.modal"),a.support.transition&&this.$element.hasClass("fade")?this.$element.one("bsTransitionEnd",a.proxy(this.hideModal,this)).emulateTransitionEnd(c.TRANSITION_DURATION):this.hideModal())},c.prototype.enforceFocus=function(){a(document).off("focusin.bs.modal").on("focusin.bs.modal",a.proxy(function(a){document===a.target||this.$element[0]===a.target||this.$element.has(a.target).length||this.$element.trigger("focus")},this))},c.prototype.escape=function(){this.isShown&&this.options.keyboard?this.$element.on("keydown.dismiss.bs.modal",a.proxy(function(a){27==a.which&&this.hide()},this)):this.isShown||this.$element.off("keydown.dismiss.bs.modal")},c.prototype.resize=function(){this.isShown?a(window).on("resize.bs.modal",a.proxy(this.handleUpdate,this)):a(window).off("resize.bs.modal")},c.prototype.hideModal=function(){var a=this;this.$element.hide(),this.backdrop(function(){a.$body.removeClass("modal-open"),a.resetAdjustments(),a.resetScrollbar(),a.$element.trigger("hidden.bs.modal")})},c.prototype.removeBackdrop=function(){this.$backdrop&&this.$backdrop.remove(),this.$backdrop=null},c.prototype.backdrop=function(b){var d=this,e=this.$element.hasClass("fade")?"fade":"";if(this.isShown&&this.options.backdrop){var f=a.support.transition&&e;if(this.$backdrop=a(document.createElement("div")).addClass("modal-backdrop "+e).appendTo(this.$body),this.$element.on("click.dismiss.bs.modal",a.proxy(function(a){return this.ignoreBackdropClick?void(this.ignoreBackdropClick=!1):void(a.target===a.currentTarget&&("static"==this.options.backdrop?this.$element[0].focus():this.hide()))},this)),f&&this.$backdrop[0].offsetWidth,this.$backdrop.addClass("in"),!b)return;f?this.$backdrop.one("bsTransitionEnd",b).emulateTransitionEnd(c.BACKDROP_TRANSITION_DURATION):b()}else if(!this.isShown&&this.$backdrop){this.$backdrop.removeClass("in");var g=function(){d.removeBackdrop(),b&&b()};a.support.transition&&this.$element.hasClass("fade")?this.$backdrop.one("bsTransitionEnd",g).emulateTransitionEnd(c.BACKDROP_TRANSITION_DURATION):g()}else b&&b()},c.prototype.handleUpdate=function(){this.adjustDialog()},c.prototype.adjustDialog=function(){var a=this.$element[0].scrollHeight>document.documentElement.clientHeight;this.$element.css({paddingLeft:!this.bodyIsOverflowing&&a?this.scrollbarWidth:"",paddingRight:this.bodyIsOverflowing&&!a?this.scrollbarWidth:""})},c.prototype.resetAdjustments=function(){this.$element.css({paddingLeft:"",paddingRight:""})},c.prototype.checkScrollbar=function(){var a=window.innerWidth;if(!a){var b=document.documentElement.getBoundingClientRect();a=b.right-Math.abs(b.left)}this.bodyIsOverflowing=document.body.clientWidth<a,this.scrollbarWidth=this.measureScrollbar()},c.prototype.setScrollbar=function(){var a=parseInt(this.$body.css("padding-right")||0,10);this.originalBodyPad=document.body.style.paddingRight||"",this.bodyIsOverflowing&&this.$body.css("padding-right",a+this.scrollbarWidth)},c.prototype.resetScrollbar=function(){this.$body.css("padding-right",this.originalBodyPad)},c.prototype.measureScrollbar=function(){var a=document.createElement("div");a.className="modal-scrollbar-measure",this.$body.append(a);var b=a.offsetWidth-a.clientWidth;return this.$body[0].removeChild(a),b};var d=a.fn.modal;a.fn.modal=b,a.fn.modal.Constructor=c,a.fn.modal.noConflict=function(){return a.fn.modal=d,this},a(document).on("click.bs.modal.data-api",'[data-toggle="modal"]',function(c){var d=a(this),e=d.attr("href"),f=a(d.attr("data-target")||e&&e.replace(/.*(?=#[^\s]+$)/,"")),g=f.data("bs.modal")?"toggle":a.extend({remote:!/#/.test(e)&&e},f.data(),d.data());d.is("a")&&c.preventDefault(),f.one("show.bs.modal",function(a){a.isDefaultPrevented()||f.one("hidden.bs.modal",function(){d.is(":visible")&&d.trigger("focus")})}),b.call(f,g,this)})}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.tooltip"),f="object"==typeof b&&b;!e&&/destroy|hide/.test(b)||(e||d.data("bs.tooltip",e=new c(this,f)),"string"==typeof b&&e[b]())})}var c=function(a,b){this.type=null,this.options=null,this.enabled=null,this.timeout=null,this.hoverState=null,this.$element=null,this.inState=null,this.init("tooltip",a,b)};c.VERSION="3.3.7",c.TRANSITION_DURATION=150,c.DEFAULTS={animation:!0,placement:"top",selector:!1,template:'<div class="tooltip" role="tooltip"><div class="tooltip-arrow"></div><div class="tooltip-inner"></div></div>',trigger:"hover focus",title:"",delay:0,html:!1,container:!1,viewport:{selector:"body",padding:0}},c.prototype.init=function(b,c,d){if(this.enabled=!0,this.type=b,this.$element=a(c),this.options=this.getOptions(d),this.$viewport=this.options.viewport&&a(a.isFunction(this.options.viewport)?this.options.viewport.call(this,this.$element):this.options.viewport.selector||this.options.viewport),this.inState={click:!1,hover:!1,focus:!1},this.$element[0]instanceof document.constructor&&!this.options.selector)throw new Error("`selector` option must be specified when initializing "+this.type+" on the window.document object!");for(var e=this.options.trigger.split(" "),f=e.length;f--;){var g=e[f];if("click"==g)this.$element.on("click."+this.type,this.options.selector,a.proxy(this.toggle,this));else if("manual"!=g){var h="hover"==g?"mouseenter":"focusin",i="hover"==g?"mouseleave":"focusout";this.$element.on(h+"."+this.type,this.options.selector,a.proxy(this.enter,this)),this.$element.on(i+"."+this.type,this.options.selector,a.proxy(this.leave,this))}}this.options.selector?this._options=a.extend({},this.options,{trigger:"manual",selector:""}):this.fixTitle()},c.prototype.getDefaults=function(){return c.DEFAULTS},c.prototype.getOptions=function(b){return b=a.extend({},this.getDefaults(),this.$element.data(),b),b.delay&&"number"==typeof b.delay&&(b.delay={show:b.delay,hide:b.delay}),b},c.prototype.getDelegateOptions=function(){var b={},c=this.getDefaults();return this._options&&a.each(this._options,function(a,d){c[a]!=d&&(b[a]=d)}),b},c.prototype.enter=function(b){var c=b instanceof this.constructor?b:a(b.currentTarget).data("bs."+this.type);return c||(c=new this.constructor(b.currentTarget,this.getDelegateOptions()),a(b.currentTarget).data("bs."+this.type,c)),b instanceof a.Event&&(c.inState["focusin"==b.type?"focus":"hover"]=!0),c.tip().hasClass("in")||"in"==c.hoverState?void(c.hoverState="in"):(clearTimeout(c.timeout),c.hoverState="in",c.options.delay&&c.options.delay.show?void(c.timeout=setTimeout(function(){"in"==c.hoverState&&c.show()},c.options.delay.show)):c.show())},c.prototype.isInStateTrue=function(){for(var a in this.inState)if(this.inState[a])return!0;return!1},c.prototype.leave=function(b){var c=b instanceof this.constructor?b:a(b.currentTarget).data("bs."+this.type);if(c||(c=new this.constructor(b.currentTarget,this.getDelegateOptions()),a(b.currentTarget).data("bs."+this.type,c)),b instanceof a.Event&&(c.inState["focusout"==b.type?"focus":"hover"]=!1),!c.isInStateTrue())return clearTimeout(c.timeout),c.hoverState="out",c.options.delay&&c.options.delay.hide?void(c.timeout=setTimeout(function(){"out"==c.hoverState&&c.hide()},c.options.delay.hide)):c.hide()},c.prototype.show=function(){var b=a.Event("show.bs."+this.type);if(this.hasContent()&&this.enabled){this.$element.trigger(b);var d=a.contains(this.$element[0].ownerDocument.documentElement,this.$element[0]);if(b.isDefaultPrevented()||!d)return;var e=this,f=this.tip(),g=this.getUID(this.type);this.setContent(),f.attr("id",g),this.$element.attr("aria-describedby",g),this.options.animation&&f.addClass("fade");var h="function"==typeof this.options.placement?this.options.placement.call(this,f[0],this.$element[0]):this.options.placement,i=/\s?auto?\s?/i,j=i.test(h);j&&(h=h.replace(i,"")||"top"),f.detach().css({top:0,left:0,display:"block"}).addClass(h).data("bs."+this.type,this),this.options.container?f.appendTo(this.options.container):f.insertAfter(this.$element),this.$element.trigger("inserted.bs."+this.type);var k=this.getPosition(),l=f[0].offsetWidth,m=f[0].offsetHeight;if(j){var n=h,o=this.getPosition(this.$viewport);h="bottom"==h&&k.bottom+m>o.bottom?"top":"top"==h&&k.top-m<o.top?"bottom":"right"==h&&k.right+l>o.width?"left":"left"==h&&k.left-l<o.left?"right":h,f.removeClass(n).addClass(h)}var p=this.getCalculatedOffset(h,k,l,m);this.applyPlacement(p,h);var q=function(){var a=e.hoverState;e.$element.trigger("shown.bs."+e.type),e.hoverState=null,"out"==a&&e.leave(e)};a.support.transition&&this.$tip.hasClass("fade")?f.one("bsTransitionEnd",q).emulateTransitionEnd(c.TRANSITION_DURATION):q()}},c.prototype.applyPlacement=function(b,c){var d=this.tip(),e=d[0].offsetWidth,f=d[0].offsetHeight,g=parseInt(d.css("margin-top"),10),h=parseInt(d.css("margin-left"),10);isNaN(g)&&(g=0),isNaN(h)&&(h=0),b.top+=g,b.left+=h,a.offset.setOffset(d[0],a.extend({using:function(a){d.css({top:Math.round(a.top),left:Math.round(a.left)})}},b),0),d.addClass("in");var i=d[0].offsetWidth,j=d[0].offsetHeight;"top"==c&&j!=f&&(b.top=b.top+f-j);var k=this.getViewportAdjustedDelta(c,b,i,j);k.left?b.left+=k.left:b.top+=k.top;var l=/top|bottom/.test(c),m=l?2*k.left-e+i:2*k.top-f+j,n=l?"offsetWidth":"offsetHeight";d.offset(b),this.replaceArrow(m,d[0][n],l)},c.prototype.replaceArrow=function(a,b,c){this.arrow().css(c?"left":"top",50*(1-a/b)+"%").css(c?"top":"left","")},c.prototype.setContent=function(){var a=this.tip(),b=this.getTitle();a.find(".tooltip-inner")[this.options.html?"html":"text"](b),a.removeClass("fade in top bottom left right")},c.prototype.hide=function(b){function d(){"in"!=e.hoverState&&f.detach(),e.$element&&e.$element.removeAttr("aria-describedby").trigger("hidden.bs."+e.type),b&&b()}var e=this,f=a(this.$tip),g=a.Event("hide.bs."+this.type);if(this.$element.trigger(g),!g.isDefaultPrevented())return f.removeClass("in"),a.support.transition&&f.hasClass("fade")?f.one("bsTransitionEnd",d).emulateTransitionEnd(c.TRANSITION_DURATION):d(),this.hoverState=null,this},c.prototype.fixTitle=function(){var a=this.$element;(a.attr("title")||"string"!=typeof a.attr("data-original-title"))&&a.attr("data-original-title",a.attr("title")||"").attr("title","")},c.prototype.hasContent=function(){return this.getTitle()},c.prototype.getPosition=function(b){b=b||this.$element;var c=b[0],d="BODY"==c.tagName,e=c.getBoundingClientRect();null==e.width&&(e=a.extend({},e,{width:e.right-e.left,height:e.bottom-e.top}));var f=window.SVGElement&&c instanceof window.SVGElement,g=d?{top:0,left:0}:f?null:b.offset(),h={scroll:d?document.documentElement.scrollTop||document.body.scrollTop:b.scrollTop()},i=d?{width:a(window).width(),height:a(window).height()}:null;return a.extend({},e,h,i,g)},c.prototype.getCalculatedOffset=function(a,b,c,d){return"bottom"==a?{top:b.top+b.height,left:b.left+b.width/2-c/2}:"top"==a?{top:b.top-d,left:b.left+b.width/2-c/2}:"left"==a?{top:b.top+b.height/2-d/2,left:b.left-c}:{top:b.top+b.height/2-d/2,left:b.left+b.width}},c.prototype.getViewportAdjustedDelta=function(a,b,c,d){var e={top:0,left:0};if(!this.$viewport)return e;var f=this.options.viewport&&this.options.viewport.padding||0,g=this.getPosition(this.$viewport);if(/right|left/.test(a)){var h=b.top-f-g.scroll,i=b.top+f-g.scroll+d;h<g.top?e.top=g.top-h:i>g.top+g.height&&(e.top=g.top+g.height-i)}else{var j=b.left-f,k=b.left+f+c;j<g.left?e.left=g.left-j:k>g.right&&(e.left=g.left+g.width-k)}return e},c.prototype.getTitle=function(){var a,b=this.$element,c=this.options;return a=b.attr("data-original-title")||("function"==typeof c.title?c.title.call(b[0]):c.title)},c.prototype.getUID=function(a){do a+=~~(1e6*Math.random());while(document.getElementById(a));return a},c.prototype.tip=function(){if(!this.$tip&&(this.$tip=a(this.options.template),1!=this.$tip.length))throw new Error(this.type+" `template` option must consist of exactly 1 top-level element!");return this.$tip},c.prototype.arrow=function(){return this.$arrow=this.$arrow||this.tip().find(".tooltip-arrow")},c.prototype.enable=function(){this.enabled=!0},c.prototype.disable=function(){this.enabled=!1},c.prototype.toggleEnabled=function(){this.enabled=!this.enabled},c.prototype.toggle=function(b){var c=this;b&&(c=a(b.currentTarget).data("bs."+this.type),c||(c=new this.constructor(b.currentTarget,this.getDelegateOptions()),a(b.currentTarget).data("bs."+this.type,c))),b?(c.inState.click=!c.inState.click,c.isInStateTrue()?c.enter(c):c.leave(c)):c.tip().hasClass("in")?c.leave(c):c.enter(c)},c.prototype.destroy=function(){var a=this;clearTimeout(this.timeout),this.hide(function(){a.$element.off("."+a.type).removeData("bs."+a.type),a.$tip&&a.$tip.detach(),a.$tip=null,a.$arrow=null,a.$viewport=null,a.$element=null})};var d=a.fn.tooltip;a.fn.tooltip=b,a.fn.tooltip.Constructor=c,a.fn.tooltip.noConflict=function(){return a.fn.tooltip=d,this}}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.popover"),f="object"==typeof b&&b;!e&&/destroy|hide/.test(b)||(e||d.data("bs.popover",e=new c(this,f)),"string"==typeof b&&e[b]())})}var c=function(a,b){this.init("popover",a,b)};if(!a.fn.tooltip)throw new Error("Popover requires tooltip.js");c.VERSION="3.3.7",c.DEFAULTS=a.extend({},a.fn.tooltip.Constructor.DEFAULTS,{placement:"right",trigger:"click",content:"",template:'<div class="popover" role="tooltip"><div class="arrow"></div><h3 class="popover-title"></h3><div class="popover-content"></div></div>'}),c.prototype=a.extend({},a.fn.tooltip.Constructor.prototype),c.prototype.constructor=c,c.prototype.getDefaults=function(){return c.DEFAULTS},c.prototype.setContent=function(){var a=this.tip(),b=this.getTitle(),c=this.getContent();a.find(".popover-title")[this.options.html?"html":"text"](b),a.find(".popover-content").children().detach().end()[this.options.html?"string"==typeof c?"html":"append":"text"](c),a.removeClass("fade top bottom left right in"),a.find(".popover-title").html()||a.find(".popover-title").hide()},c.prototype.hasContent=function(){return this.getTitle()||this.getContent()},c.prototype.getContent=function(){var a=this.$element,b=this.options;return a.attr("data-content")||("function"==typeof b.content?b.content.call(a[0]):b.content)},c.prototype.arrow=function(){return this.$arrow=this.$arrow||this.tip().find(".arrow")};var d=a.fn.popover;a.fn.popover=b,a.fn.popover.Constructor=c,a.fn.popover.noConflict=function(){return a.fn.popover=d,this}}(jQuery),+function(a){function b(c,d){this.$body=a(document.body),this.$scrollElement=a(a(c).is(document.body)?window:c),this.options=a.extend({},b.DEFAULTS,d),this.selector=(this.options.target||"")+" .nav li > a",this.offsets=[],this.targets=[],this.activeTarget=null,this.scrollHeight=0,this.$scrollElement.on("scroll.bs.scrollspy",a.proxy(this.process,this)),this.refresh(),this.process()}function c(c){return this.each(function(){var d=a(this),e=d.data("bs.scrollspy"),f="object"==typeof c&&c;e||d.data("bs.scrollspy",e=new b(this,f)),"string"==typeof c&&e[c]()})}b.VERSION="3.3.7",b.DEFAULTS={offset:10},b.prototype.getScrollHeight=function(){return this.$scrollElement[0].scrollHeight||Math.max(this.$body[0].scrollHeight,document.documentElement.scrollHeight)},b.prototype.refresh=function(){var b=this,c="offset",d=0;this.offsets=[],this.targets=[],this.scrollHeight=this.getScrollHeight(),a.isWindow(this.$scrollElement[0])||(c="position",d=this.$scrollElement.scrollTop()),this.$body.find(this.selector).map(function(){var b=a(this),e=b.data("target")||b.attr("href"),f=/^#./.test(e)&&a(e);return f&&f.length&&f.is(":visible")&&[[f[c]().top+d,e]]||null}).sort(function(a,b){return a[0]-b[0]}).each(function(){b.offsets.push(this[0]),b.targets.push(this[1])})},b.prototype.process=function(){var a,b=this.$scrollElement.scrollTop()+this.options.offset,c=this.getScrollHeight(),d=this.options.offset+c-this.$scrollElement.height(),e=this.offsets,f=this.targets,g=this.activeTarget;if(this.scrollHeight!=c&&this.refresh(),b>=d)return g!=(a=f[f.length-1])&&this.activate(a);if(g&&b<e[0])return this.activeTarget=null,this.clear();for(a=e.length;a--;)g!=f[a]&&b>=e[a]&&(void 0===e[a+1]||b<e[a+1])&&this.activate(f[a])},b.prototype.activate=function(b){
+this.activeTarget=b,this.clear();var c=this.selector+'[data-target="'+b+'"],'+this.selector+'[href="'+b+'"]',d=a(c).parents("li").addClass("active");d.parent(".dropdown-menu").length&&(d=d.closest("li.dropdown").addClass("active")),d.trigger("activate.bs.scrollspy")},b.prototype.clear=function(){a(this.selector).parentsUntil(this.options.target,".active").removeClass("active")};var d=a.fn.scrollspy;a.fn.scrollspy=c,a.fn.scrollspy.Constructor=b,a.fn.scrollspy.noConflict=function(){return a.fn.scrollspy=d,this},a(window).on("load.bs.scrollspy.data-api",function(){a('[data-spy="scroll"]').each(function(){var b=a(this);c.call(b,b.data())})})}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.tab");e||d.data("bs.tab",e=new c(this)),"string"==typeof b&&e[b]()})}var c=function(b){this.element=a(b)};c.VERSION="3.3.7",c.TRANSITION_DURATION=150,c.prototype.show=function(){var b=this.element,c=b.closest("ul:not(.dropdown-menu)"),d=b.data("target");if(d||(d=b.attr("href"),d=d&&d.replace(/.*(?=#[^\s]*$)/,"")),!b.parent("li").hasClass("active")){var e=c.find(".active:last a"),f=a.Event("hide.bs.tab",{relatedTarget:b[0]}),g=a.Event("show.bs.tab",{relatedTarget:e[0]});if(e.trigger(f),b.trigger(g),!g.isDefaultPrevented()&&!f.isDefaultPrevented()){var h=a(d);this.activate(b.closest("li"),c),this.activate(h,h.parent(),function(){e.trigger({type:"hidden.bs.tab",relatedTarget:b[0]}),b.trigger({type:"shown.bs.tab",relatedTarget:e[0]})})}}},c.prototype.activate=function(b,d,e){function f(){g.removeClass("active").find("> .dropdown-menu > .active").removeClass("active").end().find('[data-toggle="tab"]').attr("aria-expanded",!1),b.addClass("active").find('[data-toggle="tab"]').attr("aria-expanded",!0),h?(b[0].offsetWidth,b.addClass("in")):b.removeClass("fade"),b.parent(".dropdown-menu").length&&b.closest("li.dropdown").addClass("active").end().find('[data-toggle="tab"]').attr("aria-expanded",!0),e&&e()}var g=d.find("> .active"),h=e&&a.support.transition&&(g.length&&g.hasClass("fade")||!!d.find("> .fade").length);g.length&&h?g.one("bsTransitionEnd",f).emulateTransitionEnd(c.TRANSITION_DURATION):f(),g.removeClass("in")};var d=a.fn.tab;a.fn.tab=b,a.fn.tab.Constructor=c,a.fn.tab.noConflict=function(){return a.fn.tab=d,this};var e=function(c){c.preventDefault(),b.call(a(this),"show")};a(document).on("click.bs.tab.data-api",'[data-toggle="tab"]',e).on("click.bs.tab.data-api",'[data-toggle="pill"]',e)}(jQuery),+function(a){function b(b){return this.each(function(){var d=a(this),e=d.data("bs.affix"),f="object"==typeof b&&b;e||d.data("bs.affix",e=new c(this,f)),"string"==typeof b&&e[b]()})}var c=function(b,d){this.options=a.extend({},c.DEFAULTS,d),this.$target=a(this.options.target).on("scroll.bs.affix.data-api",a.proxy(this.checkPosition,this)).on("click.bs.affix.data-api",a.proxy(this.checkPositionWithEventLoop,this)),this.$element=a(b),this.affixed=null,this.unpin=null,this.pinnedOffset=null,this.checkPosition()};c.VERSION="3.3.7",c.RESET="affix affix-top affix-bottom",c.DEFAULTS={offset:0,target:window},c.prototype.getState=function(a,b,c,d){var e=this.$target.scrollTop(),f=this.$element.offset(),g=this.$target.height();if(null!=c&&"top"==this.affixed)return e<c&&"top";if("bottom"==this.affixed)return null!=c?!(e+this.unpin<=f.top)&&"bottom":!(e+g<=a-d)&&"bottom";var h=null==this.affixed,i=h?e:f.top,j=h?g:b;return null!=c&&e<=c?"top":null!=d&&i+j>=a-d&&"bottom"},c.prototype.getPinnedOffset=function(){if(this.pinnedOffset)return this.pinnedOffset;this.$element.removeClass(c.RESET).addClass("affix");var a=this.$target.scrollTop(),b=this.$element.offset();return this.pinnedOffset=b.top-a},c.prototype.checkPositionWithEventLoop=function(){setTimeout(a.proxy(this.checkPosition,this),1)},c.prototype.checkPosition=function(){if(this.$element.is(":visible")){var b=this.$element.height(),d=this.options.offset,e=d.top,f=d.bottom,g=Math.max(a(document).height(),a(document.body).height());"object"!=typeof d&&(f=e=d),"function"==typeof e&&(e=d.top(this.$element)),"function"==typeof f&&(f=d.bottom(this.$element));var h=this.getState(g,b,e,f);if(this.affixed!=h){null!=this.unpin&&this.$element.css("top","");var i="affix"+(h?"-"+h:""),j=a.Event(i+".bs.affix");if(this.$element.trigger(j),j.isDefaultPrevented())return;this.affixed=h,this.unpin="bottom"==h?this.getPinnedOffset():null,this.$element.removeClass(c.RESET).addClass(i).trigger(i.replace("affix","affixed")+".bs.affix")}"bottom"==h&&this.$element.offset({top:g-b-f})}};var d=a.fn.affix;a.fn.affix=b,a.fn.affix.Constructor=c,a.fn.affix.noConflict=function(){return a.fn.affix=d,this},a(window).on("load",function(){a('[data-spy="affix"]').each(function(){var c=a(this),d=c.data();d.offset=d.offset||{},null!=d.offsetBottom&&(d.offset.bottom=d.offsetBottom),null!=d.offsetTop&&(d.offset.top=d.offsetTop),b.call(c,d)})})}(jQuery);
+define("bootstrap", function(){});
+
+define('modules/models-price',["underscore", "modules/backbone-mozu"], function (_, Backbone) {
+
+    var ProductPrice = Backbone.MozuModel.extend({
+        dataTypes: {
+            price: Backbone.MozuModel.DataTypes.Float,
+            salePrice: Backbone.MozuModel.DataTypes.Float,
+            offerPrice: Backbone.MozuModel.DataTypes.Float
+        },
+        helpers: ['onSale'],
+        onSale: function() {
+            var salePrice = this.get('salePrice');
+            return salePrice !== null && !isNaN(salePrice) && salePrice !== this.get("price");
+        }
+    }),
+
+    ProductPriceRange = Backbone.MozuModel.extend({
+        relations: {
+            lower: ProductPrice,
+            upper: ProductPrice
+        }
+    });
+
+    return {
+        ProductPrice: ProductPrice,
+        ProductPriceRange: ProductPriceRange
+    };
+
+});
+define('modules/models-product-options',[
+	"modules/jquery-mozu",
+	"underscore",
+	"modules/backbone-mozu",
+	"hyprlive",
+	"modules/api",
+    "hyprlivecontext"],
+    function($, _, Backbone, Hypr, api, HyprLiveContext) {
+    	function zeroPad(str, len) {
+	        str = str.toString();
+	        while (str.length < 2) str = '0' + str;
+	        return str;
+	    }
+	    function formatDate(d) {
+	        var date = new Date(Date.parse(d) + (new Date()).getTimezoneOffset() * 60000);
+	        return [zeroPad(date.getFullYear(), 4), zeroPad(date.getMonth() + 1, 2), zeroPad(date.getDate(), 2)].join('-');
+	    }
+    	var ProductOption = Backbone.MozuModel.extend({
+	        idAttribute: "attributeFQN",
+	        helpers: ['isChecked'],
+	        initialize: function() {
+	            var me = this;
+	            _.defer(function() {
+	                me.listenTo(me.collection, 'invalidoptionselected', me.handleInvalid, me);
+	            });
+
+	            var equalsThisValue = function(fvalue, newVal) {
+	                return fvalue.value.toString() === newVal.toString();
+	            },
+	            containsThisValue = function(existingOptionValueListing, newVal) {
+	                return _.some(newVal, function(val) {
+	                    return equalsThisValue(existingOptionValueListing, val);
+	                });
+	            },
+	            attributeDetail = me.get('attributeDetail');
+	            if (attributeDetail) {
+	                if (attributeDetail.valueType === ProductOption.Constants.ValueTypes.Predefined) {
+	                    this.legalValues = _.chain(this.get('values')).pluck('value').map(function(v) { return !_.isUndefined(v) && !_.isNull(v) ? v.toString() : v; }).value();
+	                }
+	                if (attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo) {
+	                    me.on('change:value', function(model, newVal) {
+	                        var values;
+	                        if (me.previous('value') !== newVal) {
+	                            values = me.get('values');
+	                            _.first(values).isSelected = newVal;
+	                            me.set({
+	                                value: newVal,
+	                                shopperEnteredValue: newVal,
+	                                values: values
+	                            }, {
+	                                silent: true
+	                            });
+	                            me.trigger('optionchange', newVal, me);
+	                        }
+	                    });
+	                } else {
+	                    me.on("change:value", function(model, newVal) {
+	                        var newValObj, values = me.get("values"),
+	                            comparator = this.get('isMultiValue') ? containsThisValue : equalsThisValue;
+	                        if (typeof newVal === "string") newVal = $.trim(newVal);
+	                        if (newVal || newVal === false || newVal === 0 || newVal === '') {
+	                            _.each(values, function(fvalue) {
+	                                if (comparator(fvalue, newVal)) {
+	                                    newValObj = fvalue;
+	                                    fvalue.isSelected = true;
+	                                    me.set("value", newVal, { silent: true });
+	                                } else {
+	                                    fvalue.isSelected = false;
+	                                }
+	                            });
+	                            me.set("values", values);
+	                            if (me.get("attributeDetail").valueType === ProductOption.Constants.ValueTypes.ShopperEntered) {
+	                                me.set("shopperEnteredValue", newVal, { silent: true });
+	                            }
+	                        } else {
+	                            me.unset('value');
+	                            me.unset("shopperEnteredValue");
+	                        }
+	                        if (newValObj && !newValObj.isEnabled) me.collection.trigger('invalidoptionselected', newValObj, me);
+	                        me.trigger('optionchange', newVal, me);
+	                    });
+	                }
+	            }
+	        },
+	        handleInvalid: function(newValObj, opt) {
+	            if (this !== opt && !newValObj.autoAddEnabled) {
+	                this.unset("value");
+	                _.each(this.get("values"), function(value) {
+	                    value.isSelected = false;
+	                });
+	            }
+	        },
+	        parse: function(raw) {
+	            var selectedValue, vals, storedShopperValue;
+	            if (raw.isMultiValue) {
+	                vals = _.pluck(_.where(raw.values, { isSelected: true }), 'value');
+	                if (vals && vals.length > 0) raw.value = vals;
+	            } else {
+	                selectedValue = _.findWhere(raw.values, { isSelected: true });
+	                if (selectedValue) raw.value = selectedValue.value;
+	            }
+	            if (raw.attributeDetail) {
+	                if (raw.attributeDetail.valueType !== ProductOption.Constants.ValueTypes.Predefined) {
+	                    storedShopperValue = raw.values[0] && raw.values[0].shopperEnteredValue;
+	                    if (storedShopperValue || storedShopperValue === 0) {
+	                        raw.shopperEnteredValue = storedShopperValue;
+	                        raw.value = storedShopperValue;
+	                    }
+	                }
+	                if (raw.attributeDetail.inputType === ProductOption.Constants.InputTypes.Date && raw.attributeDetail.validation) {
+	                    raw.minDate = formatDate(raw.attributeDetail.validation.minDateValue);
+	                    raw.maxDate = formatDate(raw.attributeDetail.validation.maxDateValue);
+	                }
+	            }
+	            return raw;
+	        },
+	        isChecked: function() {
+	            var attributeDetail = this.get('attributeDetail'),
+	                values = this.get('values');
+
+	            return !!(attributeDetail && attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo && values && this.get('shopperEnteredValue'));
+	        },
+	        isValidValue: function() {
+	            var value = this.getValueOrShopperEnteredValue();
+	            return value !== undefined && value !== '' && (this.get('attributeDetail').valueType !== ProductOption.Constants.ValueTypes.Predefined || (this.get('isMultiValue') ? !_.difference(_.map(value, function(v) { return v.toString(); }), this.legalValues).length : _.contains(this.legalValues, value.toString())));
+	        },
+	        getValueOrShopperEnteredValue: function() {
+	            return this.get('value') || (this.get('value') === 0) ? this.get('value') : this.get('shopperEnteredValue');
+	        },
+	        isConfigured: function() {
+	            var attributeDetail = this.get('attributeDetail');
+	            if (!attributeDetail) return true; // if attributeDetail is missing, this is a preconfigured product
+	            return attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo ? this.isChecked() : this.isValidValue();
+	        },
+	        toJSON: function(options) {
+	            var j = Backbone.MozuModel.prototype.toJSON.apply(this, arguments);
+	            if (j && j.attributeDetail && j.attributeDetail.valueType !== ProductOption.Constants.ValueTypes.Predefined && this.isConfigured()) {
+	                var val = j.value || j.shopperEnteredValue;
+	                if (j.attributeDetail.dataType === "Number") val = parseFloat(val);
+	                j.shopperEnteredValue = j.value = val;
+	            }
+
+	            return j;
+	        },
+	        addConfiguration: function(biscuit, options) {
+	            var fqn, value, attributeDetail, valueKey, pushConfigObject, optionName;
+	            if (this.isConfigured()) {
+	                if (options && options.unabridged) {
+	                    biscuit.push(this.toJSON());
+	                } else {
+	                    fqn = this.get('attributeFQN');
+	                    value = this.getValueOrShopperEnteredValue();
+	                    attributeDetail = this.get('attributeDetail');
+	                    optionName = attributeDetail.name;
+	                    valueKey = attributeDetail.valueType === ProductOption.Constants.ValueTypes.ShopperEntered ? "shopperEnteredValue" : "value";
+	                    if (attributeDetail.dataType === "Number") value = parseFloat(value);
+	                    pushConfigObject = function(val) {
+	                        var o = {
+	                            attributeFQN: fqn,
+	                            name: optionName
+	                        };
+	                        o[valueKey] = val;
+	                        biscuit.push(o);
+	                    };
+	                    if (_.isArray(value)) {
+	                        _.each(value, pushConfigObject);
+	                    } else {
+	                        pushConfigObject(value);
+	                    }
+	                }
+	            }
+	        }
+	    }, {
+	        Constants: {
+	            ValueTypes: {
+	                Predefined: "Predefined",
+	                ShopperEntered: "ShopperEntered",
+	                AdminEntered: "AdminEntered"
+	            },
+	            InputTypes: {
+	                List: "List",
+	                YesNo: "YesNo",
+	                Date: "Date"
+	            }
+	        }
+	    });
+	return ProductOption;
+    });
+
+define('modules/models-family',[
+	"modules/jquery-mozu", 
+	"underscore", 
+	"modules/backbone-mozu", 
+	"hyprlive", 
+	"modules/models-price", 
+	"modules/api",
+    "hyprlivecontext",
+    "modules/models-product-options",
+    "modules/models-messages"], 
+    function($, _, Backbone, Hypr, PriceModels, api, HyprLiveContext, ProductOption, MessageModels) {
+    	var ProductContent = Backbone.MozuModel.extend({}), 
+	      	
+    	FamilyItem = Backbone.MozuModel.extend({
+	        mozuType: 'product',
+	        idAttribute: 'productCode',
+	        handlesMessages: true,        
+	        helpers: ['mainImage', 'notDoneConfiguring', 'hasPriceRange', 'supportsInStorePickup', 'isPurchasable','hasVolumePricing'],
+	        defaults: {
+	            purchasableState: {},
+	            quantity: 0
+	        },
+	        dataTypes: {
+	            quantity: Backbone.MozuModel.DataTypes.Int
+	        },
+	        initApiModel: function(conf) {
+	            var me = this;
+	            this.apiModel = api.createSync(this.mozuType, _.extend({}, _.result(this, 'defaults') || {}, conf));
+	            if (!this.apiModel || !this.apiModel.on) return;
+	            this.apiModel.on('action', function() {
+	                me.isLoading(true);
+	                me.trigger('request');
+	            });
+	            this.apiModel.on('sync', function(rawJSON) {
+	                me.isLoading(false);
+	                if (rawJSON) {
+	                    me._isSyncing = true;
+	                    var updaterawJSON = (rawJSON.options && rawJSON.options.length) ? me.checkVariationCode(rawJSON) : rawJSON;
+	                    me.set(updaterawJSON);
+	                    me._isSyncing = false;
+	                }
+	                me.trigger('sync', rawJSON);
+	            });
+	            this.apiModel.on('spawn', function(rawJSON) {
+	                me.isLoading(false);
+	            });
+	            this.apiModel.on('error', function(err) {
+	                var my = me;
+	                me.isLoading(false);
+	                //Get items which are out of stock
+	                if(err.message.indexOf("Item not found: "+me.id+" product code "+me.id+" is out of stock") !== -1){
+	                	var serviceurl = '/api/commerce/catalog/storefront/products/' + me.get('productCode')+'?&allowInactive=true&supressOutOfStock404=true';
+	                	api.request('GET', serviceurl).then(function(newProduct) {
+	                		my.set(newProduct);
+	                		my.trigger('ready');
+	                    	my.set("isReady",true);
+	                    	my.trigger('familyReady', my);
+	                    	if(my.get('inventoryInfo').outOfStockBehavior !== "AllowBackOrder" && typeof my.get('inventoryInfo').onlineStockAvailable !== 'undefined' && my.get('inventoryInfo').onlineStockAvailable === 0){
+		                    	my.set('quantityNull', 0);
+		                    }
+	                    	my.set('itemCode', Hypr.getLabel('item')+'# '+my.get('productCode'));
+	                    	my.messages.reset([Hypr.getLabel('productOutOfStock')]);
+	                    	return;
+	                	});     
+	                	return;
+	                }
+	                if(err.message.indexOf("Item not found: "+me.id+" product code "+me.id+" not found") !== -1){
+	                	--window.familyLength;
+	                	if(window.familyLength === window.familyArray.length){
+	                		if(!window.checkInventory){
+			                    window.outOfStockFamily = true;
+			                    $("[data-mz-action='addToCart']").addClass('button_disabled').attr("disabled", "disabled");
+			                }
+	                	}
+	                	return;
+	                }
+	                me.trigger('error', err);
+	            });
+	            this.on('change', function() {
+	                if (!me._isSyncing) {
+	                    var changedAttributes = me.changedAttributes();
+	                    _.each(changedAttributes, function(v, k, l) {
+	                        if (v && typeof v.toJSON === "function")
+	                            l[k] = v.toJSON();
+	                    });
+	                    me.apiModel.prop(changedAttributes);
+	                }
+	            });
+	        },
+            /**
+             * A helper method for use in templates. True if there are one or more messages in this model's `messages` cllection.
+             * Added to the list of {@link MozuModel#helpers } if {@link MozuModel#handlesMessages } is set to `true`.
+             * @returns {boolean} True if there are one or more messages in this model's `messages` collection.
+             * @method hasMessages
+             * @memberof MozuModel.prototype
+             */
+
+            initMessages: function() {
+                var me = this;
+                me.messages = new MessageModels.MessagesCollection();
+                me.hasMessages = function() {
+                    return me.messages.length > 0;
+                };
+                me.helpers.push('hasMessages');
+                me.on('error', function(err) {
+                    if (err.items && err.items.length) {
+                        me.messages.reset(err.items);
+                    } else {
+                        me.messages.reset([err]);
+                    }
+                    window.productView.render();
+                });
+                me.on('sync', function(raw) {
+                    if (!raw || !raw.messages || raw.messages.length === 0) me.messages.reset();
+                });
+                _.each(this.relations, function(v, key) {
+                    var relInstance = me.get(key);
+                    if (relInstance) me.listenTo(relInstance, 'error', function(err) {
+                        me.trigger('error', err);
+                    });
+                });
+            },	        
+	        validation: {
+	            quantity: {
+	                min: 0,
+	                msg: Hypr.getLabel('enterProductQuantity')
+	            }
+	        },
+	        relations: {
+	            content: ProductContent,
+	            price: PriceModels.ProductPrice,
+	            priceRange: PriceModels.ProductPriceRange,
+	            options: Backbone.Collection.extend({
+	                model: ProductOption
+	            })
+	        },
+	        hasPriceRange: function() {
+	            return this._hasPriceRange;
+	        },
+	        hasVolumePricing: function() {
+	            return this._hasVolumePricing;
+	        },
+	        calculateHasPriceRange: function(json) {
+	            this._hasPriceRange = json && !!json.priceRange;
+	        },
+	        initialize: function(conf) {
+	            var me = this;
+	            setTimeout(function(){
+	                me.apiGet().then(function(){
+	                    var slug = me.get('content').get('seoFriendlyUrl');
+	                    _.bindAll(me, 'calculateHasPriceRange', 'onOptionChange');
+	                    me.listenTo(me.get("options"), "optionchange", me.onOptionChange);
+	                    me._hasVolumePricing = false;
+	                    me._minQty = 0;
+	                    if (me.get('volumePriceBands') && me.get('volumePriceBands').length > 0) {
+	                        me._hasVolumePricing = true;
+	                        me._minQty = _.first(me.get('volumePriceBands')).minQty;
+	                        if (me._minQty > 1) {
+	                            if (me.get('quantity') <= 1) {
+	                                me.set('quantity', me._minQty);
+	                            }
+	                            me.validation.quantity.msg = Hypr.getLabel('enterProductQuantity', me._minQty);
+	                        }
+	                    }
+	                    me.updateConfiguration = _.debounce(me.updateConfiguration, 300);
+	                    me.set({ url: (HyprLiveContext.locals.siteContext.siteSubdirectory || '') + (slug ? "/" + slug : "") +  "/p/" + me.get("productCode")});
+	                    me.lastConfiguration = [];
+	                    me.calculateHasPriceRange(conf);
+	                    me.on('sync', me.calculateHasPriceRange);
+	                    me.set('itemCode', Hypr.getLabel('item')+'# '+me.get('productCode'));
+	                    if(me.get('inventoryInfo').outOfStockBehavior !== "AllowBackOrder" && typeof me.get('inventoryInfo').onlineStockAvailable !== 'undefined' && me.get('inventoryInfo').onlineStockAvailable === 0){
+	                    	me.set('quantityNull', 0);
+	                    }
+	                    me.trigger('ready');
+	                    me.trigger('familyReady', me);
+	                    me.set("isReady",true);
+	                });
+	            },400);
+	        },
+	        checkVariationCode: function(rawJSON){
+	            var me = this;
+	            var variations = rawJSON.variations || me.get("variations");
+	            var variationCodes = me.get('variationCodes');
+	            var outOfStockBehavior = rawJSON.inventoryInfo.outOfStockBehavior;
+	            //remove variations with inventory zero if outOfStockBehavior === "HideProduct"
+	            if(outOfStockBehavior === "HideProduct"){
+	            	variations.reduce(function (hideProduct, variation) {
+					  	if (variation.inventoryInfo.onlineStockAvailable === 0) {
+					    	return hideProduct.concat(variation);
+					  	} else {
+					    	return hideProduct;
+					  	}
+					}, []);
+	            }
+	            var variation_pro = [];
+	            var options_arr = [];
+	            rawJSON.variations = variation_pro;
+	            var count = 0;
+	            for(var j=0; j < variations.length; j++){
+	                for (var k = 0; k < variationCodes.length; k++) {
+	                    if (variations[j].productCode === variationCodes[k]) {
+	                        variation_pro.push(variations[j]);
+	                        if (rawJSON.options) {
+	                        	//get options matching to variationCodes with inventory
+	                            for (var x=0; x < variations[j].options.length; x++) {
+	                            	var checkDuplication = 0;
+	                            	for(var o=0; o < options_arr.length; o++){
+	                            		if(options_arr[o].option === variations[j].options[x].valueSequence)
+	                            			checkDuplication = 1;
+	                            	}
+	                            	//Don't let items to duplicate
+	                            	if(checkDuplication === 0){
+		                            	options_arr[count] = {};
+		                            	options_arr[count].option = variations[j].options[x].valueSequence;
+		                            	options_arr[count].onlineStockAvailable = variations[j].inventoryInfo.onlineStockAvailable;
+		                            	++count;
+		                                options_arr = _.uniq(options_arr); 
+		                            }
+	                            }
+	                        }
+	                    }
+	                }
+	        	}
+	            rawJSON.variations = variation_pro;
+	            //remove unwanted options
+	            if(options_arr.length){
+		            for(var i=0;i<rawJSON.options.length;i++){
+		                var opt_pro= [];
+		                var option = rawJSON.options[i];
+		                var key = option.attributeFQN;
+		                for (var b = 0; b < option.values.length; b++) {
+		                    for (var c = 0; c < options_arr.length; c++) {
+		                        if (option.values[b].attributeValueId === options_arr[c].option) {
+		                        	if(outOfStockBehavior === "DisplayMessage" && options_arr[c].onlineStockAvailable === 0){
+		                        		option.values[b].isEnabled = false;
+		                        	}
+		                            opt_pro.push(option.values[b]);     
+		                            break;                       
+		                        }
+		                    }
+		                } 
+		                if(outOfStockBehavior !== "AllowBackOrder"){
+			                var checkEnable = false;
+							for(var p = 0; p < opt_pro.length; p++) {
+							    if (opt_pro[p].isEnabled === true) {
+							        checkEnable = true;
+							        break;
+							    }
+							}
+			                if(checkEnable === false)
+			                	rawJSON.quantityNull = 0;
+			            }
+		                rawJSON.options[i].values=opt_pro;
+		            }
+		        }
+	            return rawJSON;
+	        },
+	        mainImage: function() {
+	        	var productImages = this.get('mainImage');
+	            //var productImages = this.get('content.productImages');
+	            //return productImages && productImages[0];
+	            return productImages;
+	        },
+	        notDoneConfiguring: function() {
+	            return this.get('productUsage') === FamilyItem.Constants.ProductUsage.Configurable && !this.get('variationProductCode');
+	        },
+	        isPurchasable: function() {
+	            var purchaseState = this.get('purchasableState');
+	            if (purchaseState.isPurchasable){
+	                return true;
+	            }
+	            if (this._hasVolumePricing && purchaseState.messages && purchaseState.messages.length === 1 && purchaseState.messages[0].validationType === 'MinQtyNotMet') {
+	                return true;
+	            }
+	            return false;
+	        },
+	        supportsInStorePickup: function() {
+	            return _.contains(this.get('fulfillmentTypesSupported'), FamilyItem.Constants.FulfillmentTypes.IN_STORE_PICKUP);
+	        },
+	        getConfiguredOptions: function(options) {
+	            return this.get('options').reduce(function(biscuit, opt) {
+	                opt.addConfiguration(biscuit, options);
+	                return biscuit;
+	            }, []);
+	        },
+
+
+	        addToCart: function () {
+	            var me = this;
+	            me.messages.reset();
+	            var dfd = $.Deferred();
+	            this.whenReady(function () {
+	                if (!me.validate()) {
+	                    var fulfillMethod = me.get('fulfillmentMethod');
+	                    if (!fulfillMethod) {
+	                        fulfillMethod = (me.get('goodsType') === 'Physical') ? FamilyItem.Constants.FulfillmentMethods.SHIP : FamilyItem.Constants.FulfillmentMethods.DIGITAL;
+	                    }
+	                    if(typeof me.get('inventoryInfo') === 'undefined'){
+	                    	dfd.reject(Hypr.getLabel('selectValidOption')); 
+	                    	return;
+	                    }
+	                    //reject products to proceed which are out of stock(under 'DisplayMessage' and 'HideMessage') and allow to proceed which are under 'AllowBackOrder'
+	                    if(me.get('quantityNull') === 0){
+	                    	dfd.reject(Hypr.getLabel('selectValidOption')); 
+	                    	return;
+	                    }else if(typeof me.get('inventoryInfo').onlineStockAvailable !== 'undefined'){
+	                    	//products without options
+	                    	var id = Hypr.getThemeSetting('oneSizeAttributeName'),
+                				oneSizeOption = me.get('options').get(id);
+	                    	if(oneSizeOption && me.get('quantity') === 0){
+	                    		//dfd.reject(Hypr.getLabel('productwithoutSku'));
+	                    		dfd.reject(Hypr.getLabel('selectValidOption'));
+	                    		return;
+	                    	}
+	                    	//options selected but qty zero
+	                    	if(me.get('quantity') === 0){
+	                    		me.trigger('error', { message : Hypr.getLabel('enterProductQuantity')});
+	                    		dfd.reject(Hypr.getLabel('enterQuantity', me.get('productCode')));
+	                    		return;
+	                    	}
+		                    me.apiAddToCart({
+		                        options: me.getConfiguredOptions(),
+		                        fulfillmentMethod: fulfillMethod,
+		                        quantity: me.get("quantity")
+		                    }).then(function (item) {
+		                    	dfd.resolve(me);
+		                        me.trigger('addedtocart', item);
+		                    },function(err){
+		                    	if(err.message.indexOf("The following items have limited quantity or are out of stock:") !== -1){ 
+									me.trigger('error', { message : Hypr.getLabel('productOutOfStockError')});
+		                        } 
+		                    	dfd.reject(err);
+		                    });
+		                }else if(me.lastConfiguration && !me.lastConfiguration.length && me.get('quantity') > 0){
+		                	//options not selected but qty > zero
+		                	me.trigger('error', { message : Hypr.getLabel('selectValidOption')});
+		                	dfd.reject(Hypr.getLabel('selectValidOptionProduct', me.get('productCode')));
+		                }else if(me.lastConfiguration && me.lastConfiguration.length && typeof me.get('inventoryInfo').onlineStockAvailable === 'undefined' && me.get('quantity') > 0){
+		                	//if all options are not selected and qty > 0
+		                	me.trigger('error', { message : Hypr.getLabel('selectValidOption')});
+		                	dfd.reject(Hypr.getLabel('selectValidOptionProduct', me.get('productCode')));
+		                }else if(me.lastConfiguration && me.lastConfiguration.length && me.get('quantity') === 0){
+		                	//options selected but qty 0
+		                	me.trigger('error', { message : Hypr.getLabel('enterProductQuantity')});
+		                	dfd.reject(Hypr.getLabel('enterQuantity', me.get('productCode')));
+		                }else{
+		                	dfd.reject(Hypr.getLabel('selectValidOption')); 
+		                }
+	                }
+	            });
+	            return dfd.promise();
+	        },
+	        addToWishlist: function() {
+	            var me = this;
+	            this.whenReady(function() {
+	                if (!me.validate()) {
+	                    me.apiAddToWishlist({
+	                        customerAccountId: require.mozuData('user').accountId,
+	                        quantity: me.get("quantity"),
+	                        options: me.getConfiguredOptions()
+	                    }).then(function(item) {
+	                        me.trigger('addedtowishlist', item);
+	                    });
+	                }
+	            });
+	        },
+	        addToCartForPickup: function(locationCode, locationName, quantity) {
+	            var me = this;
+	            this.whenReady(function() {
+	                return me.apiAddToCartForPickup({
+	                    fulfillmentLocationCode: locationCode,
+	                    fulfillmentMethod: FamilyItem.Constants.FulfillmentMethods.PICKUP,
+	                    fulfillmentLocationName: locationName,
+	                    quantity: quantity || 1
+	                }).then(function(item) {
+	                    me.trigger('addedtocart', item);
+	                });
+	            });
+	        },
+	        onOptionChange: function() {
+	            this.isLoading(true);
+	            this.updateConfiguration();
+	        },
+	        updateQuantity: function (newQty) {
+	            if (this.get('quantity') === newQty) return;
+	            this.set('quantity', newQty);
+	            if (!this._hasVolumePricing) return;
+	            if (newQty < this._minQty) {
+	                return this.showBelowQuantityWarning();
+	            }
+	            this.isLoading(true);
+	            this.apiConfigure({ options: this.getConfiguredOptions() }, { useExistingInstances: true });
+	        },
+	        showBelowQuantityWarning: function () {
+	            this.validation.quantity.min = this._minQty;
+	            this.validate();
+	            this.validation.quantity.min = 1;
+	        },
+	        handleMixedVolumePricingTransitions: function (data) {
+	            if (!data || !data.volumePriceBands || data.volumePriceBands.length === 0) return;
+	            if (this._minQty === data.volumePriceBands[0].minQty) return;
+	            this._minQty = data.volumePriceBands[0].minQty;
+	            this.validation.quantity.msg = Hypr.getLabel('enterProductQuantity', this._minQty);
+	            if (this.get('quantity') < this._minQty) {
+	                this.updateQuantity(this._minQty);
+	            }
+	        },
+	        updateConfiguration: function() {
+	            var me = this,
+	              newConfiguration = this.getConfiguredOptions();
+	            if (JSON.stringify(this.lastConfiguration) !== JSON.stringify(newConfiguration)) {
+	                this.lastConfiguration = newConfiguration;
+	                this.apiConfigure({ options: newConfiguration }, { useExistingInstances: true })
+	                    .then(function (apiModel) {	   	                    	
+	                    	var html = "";
+	                    	var price = "";
+	                    	if(!me.get('addedtocart')){
+	                    		//set item code Item# 412167
+	                    		if(me.get('variationProductCode')){
+	                    			me.set('itemCode', Hypr.getLabel('sku')+'# '+me.get('variationProductCode'));
+	                    		}
+	                    		//To show In Stock price
+	                    		// If price is not a range
+		                    	if(typeof me.get('price').get('priceType') != 'undefined'){
+		                    		var sp_price = "";
+			                    	if(typeof me.get('price').get('salePrice') != 'undefined')
+		                				sp_price = me.get('price').get('salePrice');
+		            				else
+		                				sp_price = me.get('price').get('price');
+		            				price = Hypr.engine.render("{{price|currency}}",{ locals: { price: sp_price }}); 
+		            			}else{
+		            				//If price is in a range
+		            				var lower_sp_price = "";
+		            				var upper_sp_price = "";
+		            				//get lower salePrice/price
+		            				if(typeof me.get('priceRange').get('lower').get('salePrice') != 'undefined')
+		            					lower_sp_price = me.get('priceRange').get('lower').get('salePrice');
+		            				else 
+		            					lower_sp_price = me.get('priceRange').get('lower').get('price');
+		            				//get upper salePrice/price
+		            				if(typeof me.get('priceRange').get('upper').get('salePrice') != 'undefined')
+		            					upper_sp_price = me.get('priceRange').get('upper').get('salePrice');
+		            				else 
+		            					upper_sp_price = me.get('priceRange').get('upper').get('price');
+		            				lower_sp_price = Hypr.engine.render("{{price|currency}}",{ locals: { price: lower_sp_price }});
+		            				upper_sp_price = Hypr.engine.render("{{price|currency}}",{ locals: { price: upper_sp_price }});
+		            				price = lower_sp_price + ' - '+ upper_sp_price;
+		            			}
+	            				var stockMsglabel = Hypr.getLabel('upcInStock');  
+	            				html += stockMsglabel + ' ' + price;    
+	            				me.set('stockInfo', html);      
+            				}else{
+            					//Replace VariationProductCode code with productCode
+            					me.set('itemCode', Hypr.getLabel('item')+'# '+me.get('productCode'));
+            				}
+            				me.unset('addedtocart');
+	                        if (me._hasVolumePricing) {
+	                            me.handleMixedVolumePricingTransitions(apiModel.data);
+	                        }	                        
+	                     });
+	            } else {
+	                this.isLoading(false);
+	            }
+	        },
+	        parse: function(prodJSON) {
+	            if (prodJSON && prodJSON.productCode && !prodJSON.variationProductCode) {
+	                this.unset('variationProductCode');
+	            }
+	            return prodJSON;
+	        },
+	        toJSON: function(options) {
+	            var j = Backbone.MozuModel.prototype.toJSON.apply(this, arguments);
+	            if (!options || !options.helpers) {
+	                j.options = this.getConfiguredOptions({ unabridged: true });
+	            }
+	            if (options && options.helpers) {
+	                if (typeof j.mfgPartNumber == "string") j.mfgPartNumber = [j.mfgPartNumber];
+	                if (typeof j.upc == "string") j.upc = [j.upc];
+	                if (j.bundledProducts && j.bundledProducts.length === 0) delete j.bundledProducts;
+	            }
+	            return j;
+	        },
+	        getBundledProductProperties: function(opts) {
+	            var self = this,
+	                loud = !opts || !opts.silent;
+	            if (loud) {
+	                this.isLoading(true);
+	                this.trigger('request');
+	            }
+
+	            var bundledProducts = this.get('bundledProducts'),
+	                numReqs = bundledProducts.length,
+	                deferred = api.defer();
+	            _.each(bundledProducts, function(bp) {
+	                var op = api.get('product', bp.productCode);
+	                op.ensure(function() {
+	                    if (--numReqs === 0) {
+	                        _.defer(function() {
+	                            self.set('bundledProducts', bundledProducts);
+	                            if (loud) {
+	                                this.trigger('sync', bundledProducts);
+	                                this.isLoading(false);
+	                            }
+	                            deferred.resolve(bundledProducts);
+	                        });
+	                    }
+	                });
+	                op.then(function(p) {
+	                    _.each(p.prop('properties'), function(prop) {
+	                        if (!prop.values || prop.values.length === 0 || prop.values[0].value === '' || prop.values[0].stringValue === '') {
+	                            prop.isEmpty = true;
+	                        }
+	                    });
+	                    _.extend(bp, p.data);
+	                });
+	            });
+
+	            return deferred.promise;
+	        }
+	    }, {
+	        Constants: {
+	            FulfillmentMethods: {
+	                SHIP: "Ship",
+	                PICKUP: "Pickup",
+	                DIGITAL: "Digital"
+	            },
+	            // for catalog instead of commerce
+	            FulfillmentTypes: {
+	                IN_STORE_PICKUP: "InStorePickup"
+	            },
+	            ProductUsage: {
+	                Configurable: 'Configurable'
+	            }
+	        }   
+	    });
+		return FamilyItem;
+    });
+define('modules/models-product',["modules/jquery-mozu", "underscore", "modules/backbone-mozu", "hyprlive", "modules/models-price", "modules/api", "hyprlivecontext", 'modules/models-family', 'modules/models-product-options', "modules/models-messages"], function($, _, Backbone, Hypr, PriceModels, api, HyprLiveContext, FamilyItem, ProductOption, MessageModels) {
+
+
+    var ProductContent = Backbone.MozuModel.extend({}),
+
+    Product = Backbone.MozuModel.extend({
+        mozuType: 'product',
+        idAttribute: 'productCode',
+        handlesMessages: true,
+        helpers: ['mainImage', 'notDoneConfiguring', 'hasPriceRange', 'supportsInStorePickup', 'isPurchasable','hasVolumePricing'],
+        defaults: {
+            purchasableState: {},
+            quantity: 1
+        },
+        dataTypes: {
+            quantity: Backbone.MozuModel.DataTypes.Int
+        },
+        validation: {
+            quantity: {
+                min: 0,
+                msg: Hypr.getLabel('enterProductQuantity')
+            }
+        },
+        relations: {
+            content: ProductContent,
+            price: PriceModels.ProductPrice,
+            priceRange: PriceModels.ProductPriceRange,
+            options: Backbone.Collection.extend({
+                model: ProductOption
+            }),
+            family:Backbone.Collection.extend({
+                model: FamilyItem
+            })
+        },
+        initMessages: function() {
+            var me = this;
+            me.messages = new MessageModels.MessagesCollection();
+            me.hasMessages = function() {
+                return me.messages.length > 0;
+            };
+            me.helpers.push('hasMessages');
+            me.on('error', function(err) {
+                if (err.items && err.items.length) {
+                    me.messages.reset(err.items);
+                } else {
+                    me.messages.reset([err]);
+                }
+            });
+            me.on('sync', function(raw) {
+                if (!raw || !raw.messages || raw.messages.length === 0) me.messages.reset();
+            });
+            _.each(this.relations, function(v, key) {
+                var relInstance = me.get(key);
+                if (relInstance && key!=='family') me.listenTo(relInstance, 'error', function(err) {
+                    me.trigger('error', err);
+                });
+            });
+        },
+        hasPriceRange: function() {
+            return this._hasPriceRange;
+        },
+        hasVolumePricing: function() {
+            return this._hasVolumePricing;
+        },
+        calculateHasPriceRange: function(json) {
+            this._hasPriceRange = json && !!json.priceRange;
+        },
+        initialize: function(conf) {
+            window.familyArray = [];
+            window.checkInventory = false;
+            var slug = this.get('content').get('seoFriendlyUrl');
+            _.bindAll(this, 'calculateHasPriceRange', 'onOptionChange', 'getFamilyMembers');
+            this.listenTo(this.get("options"), "optionchange", this.onOptionChange);
+            this.get("family").bind( 'familyReady', this.getFamilyMembers);
+            this._hasVolumePricing = false;
+            this._minQty = 0;
+            if (this.get('volumePriceBands') && this.get('volumePriceBands').length > 0) {
+                this._hasVolumePricing = true;
+                this._minQty = _.first(this.get('volumePriceBands')).minQty;
+                if (this._minQty > 1) {
+                    if (this.get('quantity') <= 1) {
+                        this.set('quantity', this._minQty);
+                    }
+                    this.validation.quantity.msg = Hypr.getLabel('enterProductQuantity', this._minQty);
+                }
+            }
+            this.updateConfiguration = _.debounce(this.updateConfiguration, 300);
+            this.set({ url: (HyprLiveContext.locals.siteContext.siteSubdirectory || '') + (slug ? "/" + slug : "") +  "/p/" + this.get("productCode")});
+            this.lastConfiguration = [];
+            this.calculateHasPriceRange(conf);
+            this.on('sync', this.calculateHasPriceRange);
+        },
+        getFamilyMembers: function(e){
+            //console.log(e);
+            var checkInArray = false;
+            if(window.familyArray.length){
+                if($.inArray(e.get('productCode'), window.familyArray) === -1){
+                    window.familyArray.push(e.get('productCode'));
+                    //check if out of stock
+                    if(typeof e.get('inventoryInfo').onlineStockAvailable !== 'undefined' && e.get('inventoryInfo').onlineStockAvailable !== 0)
+                        window.checkInventory = true;
+                    else if(typeof e.get('inventoryInfo').onlineStockAvailable === 'undefined'){
+                        if(this.checkVariationInventory(e))
+                            window.checkInventory = true;
+                    }
+                }
+            }else{
+                window.familyArray.push(e.get('productCode'));
+                //check if out of stock
+                if(typeof e.get('inventoryInfo').onlineStockAvailable !== 'undefined' && e.get('inventoryInfo').onlineStockAvailable !== 0)
+                    window.checkInventory = true;
+                else if(typeof e.get('inventoryInfo').onlineStockAvailable === 'undefined'){
+                    if(this.checkVariationInventory(e))
+                        window.checkInventory = true;
+                }
+            }
+            //if all elements added in familyArray, check for inventory status
+            if(window.familyLength === window.familyArray.length){
+                if(!window.checkInventory){
+                    window.outOfStockFamily = true;
+                }
+            }
+            return;
+        },
+        mainImage: function() {
+            var productImages = this.get('content.productImages');
+            return productImages && productImages[0];
+        },
+        notDoneConfiguring: function() {
+            return this.get('productUsage') === Product.Constants.ProductUsage.Configurable && !this.get('variationProductCode');
+        },
+        isPurchasable: function() {
+            var purchaseState = this.get('purchasableState');
+            if (purchaseState.isPurchasable){
+                return true;
+            }
+            if (this._hasVolumePricing && purchaseState.messages && purchaseState.messages.length === 1 && purchaseState.messages[0].validationType === 'MinQtyNotMet') {
+                return true;
+            }
+            return false;
+        },
+        supportsInStorePickup: function() {
+            return _.contains(this.get('fulfillmentTypesSupported'), Product.Constants.FulfillmentTypes.IN_STORE_PICKUP);
+        },
+        getConfiguredOptions: function(options) {
+            return this.get('options').reduce(function(biscuit, opt) {
+                opt.addConfiguration(biscuit, options);
+                return biscuit;
+            }, []);
+        },
+        addToCart: function (stopRedirect) {
+            var me = this;
+            if(this.get('family').length){
+                FamilyItem.addToCart();
+            }
+            this.whenReady(function () {
+              if (!me.validate()) {
+                    var fulfillMethod = me.get('fulfillmentMethod');
+                    if (!fulfillMethod) {
+                        fulfillMethod = (me.get('goodsType') === 'Physical') ? Product.Constants.FulfillmentMethods.SHIP : Product.Constants.FulfillmentMethods.DIGITAL;
+                    }
+                    return me.apiAddToCart({
+                        options: me.getConfiguredOptions(),
+                        fulfillmentMethod: fulfillMethod,
+                        quantity: me.get("quantity")
+                    }).then(function (item) {
+                        me.trigger('addedtocart', item, stopRedirect);
+                    }, function(err) {
+                        if(err.message.indexOf("Validation Error: The following items have limited quantity or are out of stock:") !== -1){
+                            me.messages.reset({ message: Hypr.getLabel('productOutOfStockError') });
+                        }
+                    });
+                }
+            });
+        },
+        addToWishlist: function() {
+            var me = this;
+            this.whenReady(function() {
+                if (!me.validate()) {
+                    me.apiAddToWishlist({
+                        customerAccountId: require.mozuData('user').accountId,
+                        quantity: me.get("quantity"),
+                        options: me.getConfiguredOptions()
+                    }).then(function(item) {
+                        me.trigger('addedtowishlist', item);
+                    });
+                }
+            });
+        },
+        addToCartForPickup: function(locationCode, locationName, quantity) {
+            var me = this;
+            this.whenReady(function() {
+                return me.apiAddToCartForPickup({
+                    fulfillmentLocationCode: locationCode,
+                    fulfillmentMethod: Product.Constants.FulfillmentMethods.PICKUP,
+                    fulfillmentLocationName: locationName,
+                    quantity: quantity || 1
+                }).then(function(item) {
+                    me.trigger('addedtocart', item);
+                });
+            });
+        },
+        onOptionChange: function() {
+            this.isLoading(true);
+            this.updateConfiguration();
+        },
+        updateQuantity: function (newQty) {
+            if (this.get('quantity') === newQty) return;
+            this.set('quantity', newQty);
+            if (!this._hasVolumePricing) return;
+            if (newQty < this._minQty) {
+                return this.showBelowQuantityWarning();
+            }
+            this.isLoading(true);
+            this.apiConfigure({ options: this.getConfiguredOptions() }, { useExistingInstances: true });
+        },
+        showBelowQuantityWarning: function () {
+            this.validation.quantity.min = this._minQty;
+            this.validate();
+            this.validation.quantity.min = 1;
+        },
+        handleMixedVolumePricingTransitions: function (data) {
+            if (!data || !data.volumePriceBands || data.volumePriceBands.length === 0) return;
+            if (this._minQty === data.volumePriceBands[0].minQty) return;
+            this._minQty = data.volumePriceBands[0].minQty;
+            this.validation.quantity.msg = Hypr.getLabel('enterProductQuantity', this._minQty);
+            if (this.get('quantity') < this._minQty) {
+                this.updateQuantity(this._minQty);
+            }
+        },
+        updateConfiguration: function() {
+            var me = this,
+              newConfiguration = this.getConfiguredOptions();
+            if (JSON.stringify(this.lastConfiguration) !== JSON.stringify(newConfiguration)) {
+                this.lastConfiguration = newConfiguration;
+                this.apiConfigure({ options: newConfiguration }, { useExistingInstances: true })
+                    .then(function (apiModel) {
+                        me.unset('stockInfo');
+                        if(typeof me.get('inventoryInfo').onlineStockAvailable !== 'undefined' && me.get('inventoryInfo').onlineStockAvailable !== 0){
+                            //To show In Stock price
+                            // If price is not a range
+                            var price = "";
+                            if(typeof me.get('price').get('priceType') != 'undefined'){
+                                var sp_price = "";
+                                if(typeof me.get('price').get('salePrice') != 'undefined')
+                                    sp_price = me.get('price').get('salePrice');
+                                else
+                                    sp_price = me.get('price').get('price');
+                                price = Hypr.engine.render("{{price|currency}}",{ locals: { price: sp_price }});
+                            }else{
+                                //If price is in a range
+                                var lower_sp_price = "";
+                                var upper_sp_price = "";
+                                //get lower salePrice/price
+                                if(typeof me.get('priceRange').get('lower').get('salePrice') != 'undefined')
+                                    lower_sp_price = me.get('priceRange').get('lower').get('salePrice');
+                                else
+                                    lower_sp_price = me.get('priceRange').get('lower').get('price');
+                                //get upper salePrice/price
+                                if(typeof me.get('priceRange').get('upper').get('salePrice') != 'undefined')
+                                    upper_sp_price = me.get('priceRange').get('upper').get('salePrice');
+                                else
+                                    upper_sp_price = me.get('priceRange').get('upper').get('price');
+                                lower_sp_price = Hypr.engine.render("{{price|currency}}",{ locals: { price: lower_sp_price }});
+                                upper_sp_price = Hypr.engine.render("{{price|currency}}",{ locals: { price: upper_sp_price }});
+                                price = lower_sp_price + ' - '+ upper_sp_price;
+                            }
+                            me.set('stockInfo', price);
+                        }
+                        if (me._hasVolumePricing) {
+                            me.handleMixedVolumePricingTransitions(apiModel.data);
+                        }
+                        me.trigger('optionsUpdated');
+                     });
+            } else {
+                this.isLoading(false);
+            }
+        },
+        getBundledProductProperties: function(opts) {
+            var self = this,
+                loud = !opts || !opts.silent;
+            if (loud) {
+                this.isLoading(true);
+                this.trigger('request');
+            }
+
+            var bundledProducts = this.get('bundledProducts'),
+                numReqs = bundledProducts.length,
+                deferred = api.defer();
+            _.each(bundledProducts, function(bp) {
+                var op = api.get('product', bp.productCode);
+                op.ensure(function() {
+                    if (--numReqs === 0) {
+                        _.defer(function() {
+                            self.set('bundledProducts', bundledProducts);
+                            if (loud) {
+                                this.trigger('sync', bundledProducts);
+                                this.isLoading(false);
+                            }
+                            deferred.resolve(bundledProducts);
+                        });
+                    }
+                });
+                op.then(function(p) {
+                    _.each(p.prop('properties'), function(prop) {
+                        if (!prop.values || prop.values.length === 0 || prop.values[0].value === '' || prop.values[0].stringValue === '') {
+                            prop.isEmpty = true;
+                        }
+                    });
+                    _.extend(bp, p.data);
+                });
+            });
+
+            return deferred.promise;
+        },
+        parse: function(prodJSON) {
+            if (prodJSON && prodJSON.productCode && !prodJSON.variationProductCode) {
+                this.unset('variationProductCode');
+            }
+            return prodJSON;
+        },
+        toJSON: function(options) {
+            var j = Backbone.MozuModel.prototype.toJSON.apply(this, arguments);
+            if (!options || !options.helpers) {
+                j.options = this.getConfiguredOptions({ unabridged: true });
+            }
+            if (options && options.helpers) {
+                if (typeof j.mfgPartNumber == "string") j.mfgPartNumber = [j.mfgPartNumber];
+                if (typeof j.upc == "string") j.upc = [j.upc];
+                if (j.bundledProducts && j.bundledProducts.length === 0) delete j.bundledProducts;
+            }
+            return j;
+        }
+    }, {
+        Constants: {
+            FulfillmentMethods: {
+                SHIP: "Ship",
+                PICKUP: "Pickup",
+                DIGITAL: "Digital"
+            },
+            // for catalog instead of commerce
+            FulfillmentTypes: {
+                IN_STORE_PICKUP: "InStorePickup"
+            },
+            ProductUsage: {
+                Configurable: 'Configurable'
+            }
+        },
+        fromCurrent: function () {
+            var data = require.mozuData(this.prototype.mozuType);
+            var families = _.find(data.properties, function(e) {
+                return e.attributeFQN === Hypr.getThemeSetting('familyProductAttribute') && e.values;
+            });
+            if(families)
+                data.family = JSON.parse(families.values[0].stringValue);
+            return new this(data, { silent: true, parse: true });
+        }
+    }),
+
+    ProductCollection = Backbone.MozuModel.extend({
+        relations: {
+            items: Backbone.Collection.extend({
+                model: Product
+            })
+        }
+    });
+
+    return {
+        Product: Product,
+        Option: ProductOption,
+        ProductCollection: ProductCollection
+    };
+
+});
+
+define('modules/metrics',['hyprlive', 'underscore', 'modules/jquery-mozu', "hyprlivecontext", "modules/models-product", 'modules/api'], function(Hypr, _, $, HyprLiveContext, ProductModels, api) {
+    if (window.metricsEngine === undefined) {
+               
+        var metricsEngine = {
+            
+            init: function() {
+                
+                metricsEngine.googleTagManagerEnabled = Hypr.getThemeSetting('googleTagManagerEnabled');
+                metricsEngine.impressions = [];
+                metricsEngine.currentProduct = false;
+                metricsEngine.push = false;
+                metricsEngine.debug = true;
+            },
+            
+            getGAProduct: function(cartitemObject, product, qty) {
+                               
+                var gaProduct = {'name': product.get('content').get('productName'),
+                                'id': product.get('productCode'),
+                                'sku': cartitemObject.product.mfgPartNumber,
+                                'price': cartitemObject.taxableTotal,
+                                'originalPrice': cartitemObject.unitPrice.listAmount,
+                                'brand': metricsEngine.getProductBrand(product),
+                                'category': metricsEngine.getProductCategory(product),
+                                'subscription': metricsEngine.getProductSubscription(product),
+                                'quantity': qty,
+                                'variant': metricsEngine.getProductVariant(cartitemObject)};
+                return gaProduct;
+            },
+            getList: function(){
+                
+                var pageContext = require.mozuData('pagecontext');
+                if(pageContext.pageType === "web_page"){
+                    if(pageContext.cmsContext.template.path === "home") return 'Home Page: Best Sellers';
+                    if(pageContext.cmsContext.page.path === "routine-builder") return 'Regimen Page: Recommended';
+                    return 'Quiz Page: Recommended'; //quiz page
+                }
+                if(pageContext.pageType === "cart") return 'Basket: Free Samples';
+                return 'directory';    
+            },
+            getProductCategory: function(product){
+                
+                var category = '';
+                var bdc = require.mozuData('navigation').breadcrumbs;
+                if(bdc && bdc.length){ //is plp
+                    var i;
+                    for (i = 0; i < bdc.length; i++) {
+                        var crumb = bdc[i];
+                        if(!crumb.isHidden) category += crumb.name;
+                        if(i+1 < bdc.length) category += "/";
+                    }
+                }else if(product.get('categories')){
+                    var lowerCategory = '';
+                    $(product.get('categories')).each(function(index, cat){
+                        // TO-DO: validate and give priority to Primary Category, else procced with current logic.
+                        if(!lowerCategory || (cat.categoryId < lowerCategory.categoryId && cat.isDisplayed)){
+                            lowerCategory = cat;
+                        }
+                    });
+                    category = lowerCategory.content.name+"/"+product.get('content').get('productName');
+                }else{ //product has not categories set
+                    category = product.get('content').get('productName');    
+                }
+                
+                return category;
+            },
+            getProductBrand: function(product){
+                
+                var brand = '';
+                var properties = product.get('properties');
+                $(properties).each(function(index, property){
+                    if(property.attributeFQN === 'tenant~brand-name'){
+                        var values = property.values[0];
+                        brand = values.stringValue;
+                    }
+                });                
+                return brand;
+            },
+            getProductVariant: function(cartitemObject){
+                
+                var variant = '';
+                var options = cartitemObject.product.options;
+                $(options).each(function(index, option){ variant = option.stringValue; });
+                return variant;
+            },
+            getProductSubscription: function(product){
+            
+                var autoship = $('[name="'+product.get('productCode')+'_autoShipRadio"]:checked');
+                if(autoship && $(autoship).attr('value') === "1"){
+                    var title = $('[data-id="mz_pdp_autoship_code"]').attr('title');
+                    return $.trim(title.replace('(most common)',''));
+                }else{
+                    return 'One Time Purchase';    
+                }
+            },
+            dataLayerPush: function(){
+                
+                var push = metricsEngine.push;
+                if (!metricsEngine.googleTagManagerEnabled || !push) return false;
+                
+                if(metricsEngine.debug) console.log('metrics dataLayer.push', push);                                            
+                window.dataLayer.push(push);
+                return true;                
+            },
+            
+            initAddToCartObserver: function(){
+                
+                $('.mz-productdetail-addtocart').on("click", function () {
+                    metricsEngine.currentProduct = $(this).data('mzProductCode')?$(this).data('mzProductCode'):$(this).data('mz-product-code');
+                    if(!metricsEngine.currentProduct){ //is quickview or pdp product
+                        var prod = (window.quickviewProduct)?window.quickviewProduct:ProductModels.Product.fromCurrent();
+                        metricsEngine.currentProduct = prod.id;
+                    }
+                });
+                $('[data-mz-role="cartcount"]').bind('DOMSubtreeModified', function(e) { //top cart is updated on addtocart response
+                    if(metricsEngine.currentProduct){
+                        metricsEngine.triggerTrackAddToCart();
+                        metricsEngine.currentProduct = false;
+                    }
+                });     
+            },
+            triggerTrackAddToCart: function(){
+                
+                var productCode = metricsEngine.currentProduct;
+                api.get("cart").then(function(resp) {
+                    if(resp.data.items.length){
+                        var lastMessage = resp.data.changeMessages && resp.data.changeMessages.slice(-1)[0];
+                        var lastProductAddedCode = lastMessage.metadata[0].productCode;
+                        if(lastProductAddedCode === productCode){
+                            _.each(resp.data.items, function(cartitem){
+                                if(cartitem.product.productCode === productCode){
+                                    api.get('product', productCode).then(function(productResponse){
+                                        var product = new ProductModels.Product(productResponse.data);           
+                                        window.metricsEngine.trackAddToCart(cartitem, product);    
+                                    });
+                                }
+                            });
+                        }
+                    }
+                });    
+            },
+            trackAddToCart: function(cartitemObject, product) {
+                
+                if (metricsEngine.googleTagManagerEnabled) {      
+                    try {
+                        var gaProduct = metricsEngine.getGAProduct(cartitemObject, product, product.get('quantity'));  
+                        metricsEngine.push = {'event': 'addToCart',
+                                              'depData': {'currencyCode': 'USD',
+                                                          'add': {'actionField': {'list': metricsEngine.getList()},
+                                                                  'products': [gaProduct]}}};
+                        return metricsEngine.dataLayerPush();
+                    } catch (ex) {
+                        if(metricsEngine.debug) console.log('ex', ex);
+                        return true;
+                    }                        
+                } 
+            },
+            
+            initSubscriberProductObserver: function(){
+              
+                $('#product-detail').bind('DOMSubtreeModified', function(e) { // subscription actions refresh section, losing add-to-cart button action.
+                    $('.mz-productdetail-addtocart').on("click", function () {
+                        var prod = ProductModels.Product.fromCurrent();    
+                        metricsEngine.currentProduct = prod.id;
+                    });
+                });
+            },
+
+            initSampleProductsObserver: function(){
+                
+                $('.mz-productdetail-addtocart').each(function(index, item){
+                    var productCode = $(item).data('mzProductCode');
+                    if(productCode){
+                        api.get('product', productCode).then(function(productResponse){
+                            metricsEngine.setImpressions(productResponse.data, "free Samples");
+                        });
+                    }
+                });
+
+                $('.mz-productdetail-addtocart').on("click", function () {
+                    metricsEngine.currentProduct = $(this).data('mzProductCode')?$(this).data('mzProductCode'):$(this).data('mz-product-code');
+                    $('#free-samples').bind('DOMSubtreeModified', function(e) { //sample product area is updated on addtocart response
+                        if(metricsEngine.currentProduct && e.target.innerHTML.length > 0){
+                            metricsEngine.triggerTrackAddToCart();
+                            metricsEngine.currentProduct = false;//avoids several inclusions
+                            metricsEngine.initSampleProductsObserver(); //when area refresh, needs new button clicks observers
+                        }
+                    });                    
+               });
+            },
+            setImpressions: function(productResponseData, list){
+                
+                if (metricsEngine.googleTagManagerEnabled) {
+                    var product = new ProductModels.Product(productResponseData);
+
+                    var originalPrice = '';
+                    var price = '';
+                    if(product.get('priceRange') && product.get('priceRange').lower && product.get('priceRange').upper){
+                        price = product.get('priceRange').lower.salePrice - product.get('priceRange').upper.salePrice;
+                        originalPrice = price;
+                    }else{
+                        price = (product.get('price').onSale())?product.get('price').get('salePrice'):product.get('price').get('price');
+                        originalPrice = product.get('price').get('price');
+                    }
+                    var gaProduct = {"name": product.get('content').get('productName'),      
+                                      "id": product.get('productCode'),
+                                      "price": price,
+                                      "originalPrice" : originalPrice,
+                                      "brand": metricsEngine.getProductBrand(product),
+                                      "category": metricsEngine.getProductCategory(product),
+                                      "variant": "",
+                                      "list": list,
+                                      "position": metricsEngine.impressions.length+1};
+                    metricsEngine.impressions.push(gaProduct);
+                    if(metricsEngine.impressions.length === $('.mz-productdetail-addtocart').length){
+                        metricsEngine.push = {'event': 'DEPLabs',
+                                              'depData': {'currencyCode': 'USD',
+                                                          'impressions': metricsEngine.impressions}};
+                        return metricsEngine.dataLayerPush();                                   
+                    }
+                }
+            },
+
+            initRemoveFromCartObserver: function(){
+
+                $('#cart').on("click", '[data-mz-action="removeItem"]', function () {
+                    var cartItem = $(this).data('mzCartItem');
+                    api.get("cart").then(function(resp) {
+                        if(resp.data.items.length){
+                            _.each(resp.data.items, function(cartitemObject){
+                                if(cartitemObject.id === cartItem){
+                                    metricsEngine.currentProduct = cartitemObject;  
+                                    metricsEngine.trackRemovedFromCart();
+                                    metricsEngine.currentProduct = false;
+                                }
+                            });
+                        }
+                    });
+                });
+            },
+            trackRemovedFromCart: function() {
+                
+                if (!metricsEngine.googleTagManagerEnabled  || !metricsEngine.currentProduct) return false;               
+                                
+                try {                        
+                    var cartitemObject = metricsEngine.currentProduct;
+                    api.get('product', cartitemObject.product.productCode).then(function(productResponse){
+                        var product = new ProductModels.Product(productResponse.data);           
+                        var gaProduct = metricsEngine.getGAProduct(cartitemObject, product, cartitemObject.quantity);
+                        metricsEngine.push = {'event': 'removeFromCart',
+                                              'depData': {'remove': {'actionField': {'list': metricsEngine.getList()},
+                                                                     'products': [gaProduct]}}};
+                        return metricsEngine.dataLayerPush();
+                    });
+                } catch (ex) {
+                    if(metricsEngine.debug) console.log(ex);
+                    return true;
+                }
+            }          
+        };
+        try {
+            metricsEngine.init();
+        } catch (ex) {
+            if(metricsEngine.debug) console.log('Metrics Init Error.');
+        }
+        window.metricsEngine = metricsEngine;
+    }
+
+    $(document).ready(function() {
+        var pageContext = require.mozuData('pagecontext');
+        if(pageContext.pageType === "cart"){
+            window.metricsEngine.initRemoveFromCartObserver();
+            // free samples section not always load on first load, not always takes same time to load
+            $('#free-samples').bind('DOMSubtreeModified', function(e) { 
+                window.metricsEngine.initSampleProductsObserver();
+            });
+        }else{ //for home, quiz, directory and pdp pages
+            setTimeout(function(){ //needs to wait for all add-to-cart buttons to load
+                window.metricsEngine.initAddToCartObserver();
+            },500);    
+            if(pageContext.pageType === "product") window.metricsEngine.initSubscriberProductObserver();           
+        }   
+    });
+    return window.metricsEngine;
+});
+
+define('modules/page-header/global-cart',[
+    'modules/backbone-mozu',
+    'modules/jquery-mozu',
+    "modules/api",
+    "hyprlive",
+    'underscore',
+    "modules/models-product",
+    "modules/metrics"
+], function(Backbone, $, Api, Hypr, _, ProductModels, MetricsEngine) {
+
+    var globalCartRelatedProducts = Hypr.getThemeSetting('globalCartRelatedProducts'),
+        globalCartRelatedProductsSize = Hypr.getThemeSetting('globalCartRelatedProductsSize'),
+        globalCartMaxItemCount = Hypr.getThemeSetting('globalCartMaxItemCount'),
+        globalCartHidePopover = Hypr.getThemeSetting('globalCartHidePopover'),
+        coerceBoolean = function(x) {
+            return !!x;
+        };
+    var GlobalCartView = Backbone.MozuView.extend({
+        templateName: "modules/page-header/global-cart-flyout",
+        initialize: function() {
+            var me = this;
+        },
+        render: function() {
+            var me = this;
+            Backbone.MozuView.prototype.render.apply(this);
+        },
+        showRelatedProducts: function(productCollection) {
+            var me = this;
+            var productCodes = [];
+            for (var i = 0; i < productCollection.length; i++) {
+                var currentProduct = productCollection[i].product;
+                if (currentProduct && currentProduct.properties) {
+                    for (var x = 0; x < currentProduct.properties.length; x++) {
+                        if (currentProduct.properties[x].attributeFQN == 'tenant~product-upsell') {
+                            var temp = _.pluck(currentProduct.properties[x].values, "value");
+                            productCodes = productCodes.concat($.grep(temp || [], coerceBoolean));
+
+                        }
+                    }
+                }
+            }
+            var filter = _.map(productCodes, function(c) {
+                return "ProductCode eq " + c;
+            }).join(' or ');
+            Api.get("search", { filter: filter, pageSize : globalCartRelatedProductsSize}).then(function(collection) {
+                var template = 'Widgets/misc/product-carousel-listing';
+                var RelatedProductsView = Backbone.MozuView.extend({
+                    templateName: template
+                });
+                var relatedProductsCollection = new ProductModels.ProductCollection(collection.data);
+                var relatedProductsView = new RelatedProductsView({
+                    model: relatedProductsCollection,
+                    el: me.$el.find('.related-products')
+                });
+                relatedProductsView.render();
+                relatedProductsView.$el.find('img').height(150);
+            }, function() {
+                console.log("Got some error at cross sell in Global Cart");
+            });
+
+        },
+        openLiteRegistration:function() {
+            $(".second-tab").show();
+            $(".third-tab").hide();
+            $('#liteRegistrationModal').modal('show');
+        },
+        checkoutGuest: function() {
+            $(".second-tab").hide();
+            $(".third-tab").show();
+            $('#liteRegistrationModal').modal('show');
+        },
+        update: function(showGlobalCart) {
+            var me = this;
+            Api.get("cart").then(function(resp) {
+                resp.data.cartItems = resp.data.items.slice(0,globalCartMaxItemCount);
+                if(globalCartHidePopover === true && resp.data.cartItems.length === 0){
+                    $(me.el).hide();
+                }
+                me.model.attributes = resp.data;
+                me.render();
+                if (showGlobalCart) {
+                    me.$el.show();
+                    setTimeout(function() {
+                        me.$el.attr('style', '');
+                    }, 5000);
+                }
+                if (globalCartRelatedProducts) {
+                    me.showRelatedProducts(resp.data.items);
+                }
+            });
+        }
+    });
+
+    var Model = Backbone.MozuModel.extend();
+    var globalCartView = new GlobalCartView({
+        el: $('#global-cart'),
+        model: new Model({})
+    });
+    globalCartView.render();
+    var GlobalCart = {
+        update: function(showGlobalCart) {
+            globalCartView.update(showGlobalCart);
+        }
+    };
+    return GlobalCart;
+
+});
+
 /**
  * Watches for changes to the quantity of items in the shopping cart, to update
  * cart count indicators on the storefront.
  */
-define('modules/cart-monitor',['modules/jquery-mozu', 'modules/api'], function ($, api) {
+define('modules/cart-monitor',['modules/jquery-mozu', 'modules/api', 'bootstrap', 'modules/page-header/global-cart', 'hyprlive'], function ($, api, Bootstrap, GlobalCart, Hypr) {
 
     var $cartCount,
         user = require.mozuData('user'),
         userId = user.userId,
         $document = $(document),
         CartMonitor = {
+            setAmount: function(amount) {
+                var localAmount = Hypr.engine.render("{{price|currency}}",{ locals: { price: amount }});
+                this.$amountEl.text(localAmount);
+            },           
             setCount: function(count) {
                 this.$el.text(count);
-                savedCounts[userId] = count;
-                $.cookie('mozucartcount', JSON.stringify(savedCounts), { path: '/' });
             },
             addToCount: function(count) {
-                this.setCount(this.getCount() + count);
+                this.update(true);
             },
             getCount: function() {
                 return parseInt(this.$el.text(), 10) || 0;
             },
-            update: function() {
+            update: function(showGlobalCart) {
                 api.get('cartsummary').then(function(summary) {
+                    $.cookie('mozucart', JSON.stringify(summary.data), { path: '/' });
+                    savedCarts[userId] = summary.data;
                     $document.ready(function() {
-                        CartMonitor.setCount(summary.count());
+                        $('.ml-header-global-cart-wrapper').css('display', 'block');
+                        CartMonitor.setCount(summary.data.totalQuantity);
+                        CartMonitor.setAmount(summary.data.total); 
+                        GlobalCart.update(showGlobalCart);                         
                     });
                 });
+                
             }
         },
-        savedCounts,
-        savedCount;
+        savedCarts,
+        savedCart;
 
     try {
-        savedCounts = JSON.parse($.cookie('mozucartcount'));
+        savedCarts = JSON.parse($.cookie('mozucart'));
     } catch(e) {}
 
-    if (!savedCounts) savedCounts = {};
-    savedCount = savedCounts && savedCounts[userId];
+    if (!savedCarts) savedCarts = {};
+    savedCart = savedCarts || savedCarts[userId];
 
-    if (isNaN(savedCount)) {
+    //if (isNaN(savedCart.itemCount)) {
         CartMonitor.update();
-    }
+    //}
 
     $document.ready(function () {
-        CartMonitor.$el = $('[data-mz-role="cartmonitor"]').text(savedCount || 0);
+        CartMonitor.$el = $('[data-mz-role="cartcount"]').text(savedCart.totalQuantity || 0);
+        CartMonitor.$amountEl = $('[data-mz-role="cartamount"]').text(savedCart.total || 0);
     });
 
     return CartMonitor;
@@ -5464,11 +7636,11 @@ define('modules/contextify',['modules/jquery-mozu'], function ($) {
 define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['modules/jquery-mozu'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: tooltip.js v3.2.0
+ * Bootstrap: tooltip.js v3.3.7
  * http://getbootstrap.com/javascript/#tooltip
  * Inspired by the original jQuery.tipsy by Jason Frame
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -5480,17 +7652,20 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
   // ===============================
 
   var Tooltip = function (element, options) {
-    this.type       =
-    this.options    =
-    this.enabled    =
-    this.timeout    =
-    this.hoverState =
+    this.type       = null
+    this.options    = null
+    this.enabled    = null
+    this.timeout    = null
+    this.hoverState = null
     this.$element   = null
+    this.inState    = null
 
     this.init('tooltip', element, options)
   }
 
-  Tooltip.VERSION  = '3.2.0'
+  Tooltip.VERSION  = '3.3.7'
+
+  Tooltip.TRANSITION_DURATION = 150
 
   Tooltip.DEFAULTS = {
     animation: true,
@@ -5513,7 +7688,12 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     this.type      = type
     this.$element  = $(element)
     this.options   = this.getOptions(options)
-    this.$viewport = this.options.viewport && $(this.options.viewport.selector || this.options.viewport)
+    this.$viewport = this.options.viewport && $($.isFunction(this.options.viewport) ? this.options.viewport.call(this, this.$element) : (this.options.viewport.selector || this.options.viewport))
+    this.inState   = { click: false, hover: false, focus: false }
+
+    if (this.$element[0] instanceof document.constructor && !this.options.selector) {
+      throw new Error('`selector` option must be specified when initializing ' + this.type + ' on the window.document object!')
+    }
 
     var triggers = this.options.trigger.split(' ')
 
@@ -5573,6 +7753,15 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       $(obj.currentTarget).data('bs.' + this.type, self)
     }
 
+    if (obj instanceof $.Event) {
+      self.inState[obj.type == 'focusin' ? 'focus' : 'hover'] = true
+    }
+
+    if (self.tip().hasClass('in') || self.hoverState == 'in') {
+      self.hoverState = 'in'
+      return
+    }
+
     clearTimeout(self.timeout)
 
     self.hoverState = 'in'
@@ -5584,6 +7773,14 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     }, self.options.delay.show)
   }
 
+  Tooltip.prototype.isInStateTrue = function () {
+    for (var key in this.inState) {
+      if (this.inState[key]) return true
+    }
+
+    return false
+  }
+
   Tooltip.prototype.leave = function (obj) {
     var self = obj instanceof this.constructor ?
       obj : $(obj.currentTarget).data('bs.' + this.type)
@@ -5592,6 +7789,12 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       self = new this.constructor(obj.currentTarget, this.getDelegateOptions())
       $(obj.currentTarget).data('bs.' + this.type, self)
     }
+
+    if (obj instanceof $.Event) {
+      self.inState[obj.type == 'focusout' ? 'focus' : 'hover'] = false
+    }
+
+    if (self.isInStateTrue()) return
 
     clearTimeout(self.timeout)
 
@@ -5610,7 +7813,7 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     if (this.hasContent() && this.enabled) {
       this.$element.trigger(e)
 
-      var inDom = $.contains(document.documentElement, this.$element[0])
+      var inDom = $.contains(this.$element[0].ownerDocument.documentElement, this.$element[0])
       if (e.isDefaultPrevented() || !inDom) return
       var that = this
 
@@ -5639,6 +7842,7 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
         .data('bs.' + this.type, this)
 
       this.options.container ? $tip.appendTo(this.options.container) : $tip.insertAfter(this.$element)
+      this.$element.trigger('inserted.bs.' + this.type)
 
       var pos          = this.getPosition()
       var actualWidth  = $tip[0].offsetWidth
@@ -5646,13 +7850,12 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
 
       if (autoPlace) {
         var orgPlacement = placement
-        var $parent      = this.$element.parent()
-        var parentDim    = this.getPosition($parent)
+        var viewportDim = this.getPosition(this.$viewport)
 
-        placement = placement == 'bottom' && pos.top   + pos.height       + actualHeight - parentDim.scroll > parentDim.height ? 'top'    :
-                    placement == 'top'    && pos.top   - parentDim.scroll - actualHeight < 0                                   ? 'bottom' :
-                    placement == 'right'  && pos.right + actualWidth      > parentDim.width                                    ? 'left'   :
-                    placement == 'left'   && pos.left  - actualWidth      < parentDim.left                                     ? 'right'  :
+        placement = placement == 'bottom' && pos.bottom + actualHeight > viewportDim.bottom ? 'top'    :
+                    placement == 'top'    && pos.top    - actualHeight < viewportDim.top    ? 'bottom' :
+                    placement == 'right'  && pos.right  + actualWidth  > viewportDim.width  ? 'left'   :
+                    placement == 'left'   && pos.left   - actualWidth  < viewportDim.left   ? 'right'  :
                     placement
 
         $tip
@@ -5665,14 +7868,17 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       this.applyPlacement(calculatedOffset, placement)
 
       var complete = function () {
+        var prevHoverState = that.hoverState
         that.$element.trigger('shown.bs.' + that.type)
         that.hoverState = null
+
+        if (prevHoverState == 'out') that.leave(that)
       }
 
       $.support.transition && this.$tip.hasClass('fade') ?
         $tip
           .one('bsTransitionEnd', complete)
-          .emulateTransitionEnd(150) :
+          .emulateTransitionEnd(Tooltip.TRANSITION_DURATION) :
         complete()
     }
   }
@@ -5690,8 +7896,8 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     if (isNaN(marginTop))  marginTop  = 0
     if (isNaN(marginLeft)) marginLeft = 0
 
-    offset.top  = offset.top  + marginTop
-    offset.left = offset.left + marginLeft
+    offset.top  += marginTop
+    offset.left += marginLeft
 
     // $.fn.offset doesn't round pixel values
     // so we use setOffset directly with our own function B-0
@@ -5719,16 +7925,18 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     if (delta.left) offset.left += delta.left
     else offset.top += delta.top
 
-    var arrowDelta          = delta.left ? delta.left * 2 - width + actualWidth : delta.top * 2 - height + actualHeight
-    var arrowPosition       = delta.left ? 'left'        : 'top'
-    var arrowOffsetPosition = delta.left ? 'offsetWidth' : 'offsetHeight'
+    var isVertical          = /top|bottom/.test(placement)
+    var arrowDelta          = isVertical ? delta.left * 2 - width + actualWidth : delta.top * 2 - height + actualHeight
+    var arrowOffsetPosition = isVertical ? 'offsetWidth' : 'offsetHeight'
 
     $tip.offset(offset)
-    this.replaceArrow(arrowDelta, $tip[0][arrowOffsetPosition], arrowPosition)
+    this.replaceArrow(arrowDelta, $tip[0][arrowOffsetPosition], isVertical)
   }
 
-  Tooltip.prototype.replaceArrow = function (delta, dimension, position) {
-    this.arrow().css(position, delta ? (50 * (1 - delta / dimension) + '%') : '')
+  Tooltip.prototype.replaceArrow = function (delta, dimension, isVertical) {
+    this.arrow()
+      .css(isVertical ? 'left' : 'top', 50 * (1 - delta / dimension) + '%')
+      .css(isVertical ? 'top' : 'left', '')
   }
 
   Tooltip.prototype.setContent = function () {
@@ -5739,16 +7947,19 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
     $tip.removeClass('fade in top bottom left right')
   }
 
-  Tooltip.prototype.hide = function () {
+  Tooltip.prototype.hide = function (callback) {
     var that = this
-    var $tip = this.tip()
+    var $tip = $(this.$tip)
     var e    = $.Event('hide.bs.' + this.type)
-
-    this.$element.removeAttr('aria-describedby')
 
     function complete() {
       if (that.hoverState != 'in') $tip.detach()
-      that.$element.trigger('hidden.bs.' + that.type)
+      if (that.$element) { // TODO: Check whether guarding this code with this `if` is really necessary.
+        that.$element
+          .removeAttr('aria-describedby')
+          .trigger('hidden.bs.' + that.type)
+      }
+      callback && callback()
     }
 
     this.$element.trigger(e)
@@ -5757,10 +7968,10 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
 
     $tip.removeClass('in')
 
-    $.support.transition && this.$tip.hasClass('fade') ?
+    $.support.transition && $tip.hasClass('fade') ?
       $tip
         .one('bsTransitionEnd', complete)
-        .emulateTransitionEnd(150) :
+        .emulateTransitionEnd(Tooltip.TRANSITION_DURATION) :
       complete()
 
     this.hoverState = null
@@ -5770,7 +7981,7 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
 
   Tooltip.prototype.fixTitle = function () {
     var $e = this.$element
-    if ($e.attr('title') || typeof ($e.attr('data-original-title')) != 'string') {
+    if ($e.attr('title') || typeof $e.attr('data-original-title') != 'string') {
       $e.attr('data-original-title', $e.attr('title') || '').attr('title', '')
     }
   }
@@ -5781,20 +7992,30 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
 
   Tooltip.prototype.getPosition = function ($element) {
     $element   = $element || this.$element
+
     var el     = $element[0]
     var isBody = el.tagName == 'BODY'
-    return $.extend({}, (typeof el.getBoundingClientRect == 'function') ? el.getBoundingClientRect() : null, {
-      scroll: isBody ? document.documentElement.scrollTop || document.body.scrollTop : $element.scrollTop(),
-      width:  isBody ? $(window).width()  : $element.outerWidth(),
-      height: isBody ? $(window).height() : $element.outerHeight()
-    }, isBody ? { top: 0, left: 0 } : $element.offset())
+
+    var elRect    = el.getBoundingClientRect()
+    if (elRect.width == null) {
+      // width and height are missing in IE8, so compute them manually; see https://github.com/twbs/bootstrap/issues/14093
+      elRect = $.extend({}, elRect, { width: elRect.right - elRect.left, height: elRect.bottom - elRect.top })
+    }
+    var isSvg = window.SVGElement && el instanceof window.SVGElement
+    // Avoid using $.offset() on SVGs since it gives incorrect results in jQuery 3.
+    // See https://github.com/twbs/bootstrap/issues/20280
+    var elOffset  = isBody ? { top: 0, left: 0 } : (isSvg ? null : $element.offset())
+    var scroll    = { scroll: isBody ? document.documentElement.scrollTop || document.body.scrollTop : $element.scrollTop() }
+    var outerDims = isBody ? { width: $(window).width(), height: $(window).height() } : null
+
+    return $.extend({}, elRect, scroll, outerDims, elOffset)
   }
 
   Tooltip.prototype.getCalculatedOffset = function (placement, pos, actualWidth, actualHeight) {
-    return placement == 'bottom' ? { top: pos.top + pos.height,   left: pos.left + pos.width / 2 - actualWidth / 2  } :
-           placement == 'top'    ? { top: pos.top - actualHeight, left: pos.left + pos.width / 2 - actualWidth / 2  } :
+    return placement == 'bottom' ? { top: pos.top + pos.height,   left: pos.left + pos.width / 2 - actualWidth / 2 } :
+           placement == 'top'    ? { top: pos.top - actualHeight, left: pos.left + pos.width / 2 - actualWidth / 2 } :
            placement == 'left'   ? { top: pos.top + pos.height / 2 - actualHeight / 2, left: pos.left - actualWidth } :
-        /* placement == 'right' */ { top: pos.top + pos.height / 2 - actualHeight / 2, left: pos.left + pos.width   }
+        /* placement == 'right' */ { top: pos.top + pos.height / 2 - actualHeight / 2, left: pos.left + pos.width }
 
   }
 
@@ -5818,7 +8039,7 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       var rightEdgeOffset = pos.left + viewportPadding + actualWidth
       if (leftEdgeOffset < viewportDimensions.left) { // left overflow
         delta.left = viewportDimensions.left - leftEdgeOffset
-      } else if (rightEdgeOffset > viewportDimensions.width) { // right overflow
+      } else if (rightEdgeOffset > viewportDimensions.right) { // right overflow
         delta.left = viewportDimensions.left + viewportDimensions.width - rightEdgeOffset
       }
     }
@@ -5844,19 +8065,17 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
   }
 
   Tooltip.prototype.tip = function () {
-    return (this.$tip = this.$tip || $(this.options.template))
+    if (!this.$tip) {
+      this.$tip = $(this.options.template)
+      if (this.$tip.length != 1) {
+        throw new Error(this.type + ' `template` option must consist of exactly 1 top-level element!')
+      }
+    }
+    return this.$tip
   }
 
   Tooltip.prototype.arrow = function () {
     return (this.$arrow = this.$arrow || this.tip().find('.tooltip-arrow'))
-  }
-
-  Tooltip.prototype.validate = function () {
-    if (!this.$element[0].parentNode) {
-      this.hide()
-      this.$element = null
-      this.options  = null
-    }
   }
 
   Tooltip.prototype.enable = function () {
@@ -5881,12 +8100,28 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       }
     }
 
-    self.tip().hasClass('in') ? self.leave(self) : self.enter(self)
+    if (e) {
+      self.inState.click = !self.inState.click
+      if (self.isInStateTrue()) self.enter(self)
+      else self.leave(self)
+    } else {
+      self.tip().hasClass('in') ? self.leave(self) : self.enter(self)
+    }
   }
 
   Tooltip.prototype.destroy = function () {
+    var that = this
     clearTimeout(this.timeout)
-    this.hide().$element.off('.' + this.type).removeData('bs.' + this.type)
+    this.hide(function () {
+      that.$element.off('.' + that.type).removeData('bs.' + that.type)
+      if (that.$tip) {
+        that.$tip.detach()
+      }
+      that.$tip = null
+      that.$arrow = null
+      that.$viewport = null
+      that.$element = null
+    })
   }
 
 
@@ -5899,7 +8134,7 @@ define('shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery',['m
       var data    = $this.data('bs.tooltip')
       var options = typeof option == 'object' && option
 
-      if (!data && option == 'destroy') return
+      if (!data && /destroy|hide/.test(option)) return
       if (!data) $this.data('bs.tooltip', (data = new Tooltip(this, options)))
       if (typeof option == 'string') data[option]()
     })
@@ -5933,10 +8168,10 @@ return jQuery;
 define('shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery=jQuery]>jQuery',['shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: popover.js v3.2.0
+ * Bootstrap: popover.js v3.3.7
  * http://getbootstrap.com/javascript/#popovers
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -5953,7 +8188,7 @@ define('shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[module
 
   if (!$.fn.tooltip) throw new Error('Popover requires tooltip.js')
 
-  Popover.VERSION  = '3.2.0'
+  Popover.VERSION  = '3.3.7'
 
   Popover.DEFAULTS = $.extend({}, $.fn.tooltip.Constructor.DEFAULTS, {
     placement: 'right',
@@ -5980,7 +8215,7 @@ define('shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[module
     var content = this.getContent()
 
     $tip.find('.popover-title')[this.options.html ? 'html' : 'text'](title)
-    $tip.find('.popover-content').empty()[ // we use append for html objects to maintain js events
+    $tip.find('.popover-content').children().detach().end()[ // we use append for html objects to maintain js events
       this.options.html ? (typeof content == 'string' ? 'html' : 'append') : 'text'
     ](content)
 
@@ -6009,11 +8244,6 @@ define('shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[module
     return (this.$arrow = this.$arrow || this.tip().find('.arrow'))
   }
 
-  Popover.prototype.tip = function () {
-    if (!this.$tip) this.$tip = $(this.options.template)
-    return this.$tip
-  }
-
 
   // POPOVER PLUGIN DEFINITION
   // =========================
@@ -6024,7 +8254,7 @@ define('shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[module
       var data    = $this.data('bs.popover')
       var options = typeof option == 'object' && option
 
-      if (!data && option == 'destroy') return
+      if (!data && /destroy|hide/.test(option)) return
       if (!data) $this.data('bs.popover', (data = new Popover(this, options)))
       if (typeof option == 'string') data[option]()
     })
@@ -6256,9 +8486,9 @@ return jQuery;
 /**
  * Adds a login popover to all login links on a page.
  */
-define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery=jQuery]>jQuery', 'modules/api', 'hyprlive', 'underscore', 'hyprlivecontext', 'vendor/jquery-placeholder/jquery.placeholder'],
-     function ($, api, Hypr, _, HyprLiveContext) {
 
+define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery=jQuery]>jQuery', 'modules/api', 'hyprlive', 'underscore', 'hyprlivecontext', 'vendor/jquery-placeholder/jquery.placeholder','modules/backbone-mozu'], function ($, api, Hypr, _, HyprLiveContext,backbone) {
+    var current = "";
     var usePopovers = function() {
         return !Modernizr.mq('(max-width: 480px)');
     },
@@ -6301,6 +8531,20 @@ define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/boot
         setLoading: function (yes) {
             this.loading = yes;
             this.$parent[yes ? 'addClass' : 'removeClass']('is-loading');
+        },
+        newsetLoading: function (yes) {
+            this.loading = yes;
+            $(current)[yes ? 'addClass' : 'removeClass']('is-loading');
+        },
+        newdisplayMessage: function (el, msg) {
+            this.newsetLoading(false);
+            $(el).parents('.tab-pane').find('[data-mz-role="popover-message"]').html('<span class="mz-validationmessage">' + msg + '</span>');
+        },
+        newdisplayApiMessage: function (xhr) {
+            //console.log(current);
+            var msg = xhr.message || (xhr && xhr.responseJSON && xhr.responseJSON.message) || Hypr.getLabel('unexpectedError');
+            $(current).parents('.tab-pane').find('[data-mz-role="popover-message"]').html('<span class="mz-validationmessage">' + msg + '</span>');
+            //this.newdisplayMessage(current, (xhr.message || (xhr && xhr.responseJSON && xhr.responseJSON.message) || Hypr.getLabel('unexpectedError')));
         },
         onPopoverShow: function () {
             var self = this;
@@ -6646,9 +8890,250 @@ define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/boot
             }
         }
     });
+    var EmailSignupPopover = function() {
+        DismissablePopover.apply(this, arguments);
+        this.signup = _.debounce(this.signup, 150);
+    };
+    EmailSignupPopover.prototype = new DismissablePopover();
+    $.extend(EmailSignupPopover.prototype, LoginPopover.prototype, {
+        boundMethods: ['handleEnterKey', 'dismisser', 'displayMessage', 'displayApiMessage', 'createPopover', 'signup', 'onPopoverShow'],
+        template: Hypr.getTemplate('modules/common/signup-popover').render(),
+        bindListeners: function(on) {
+            var onOrOff = on ? "on" : "off";
+            this.$parent[onOrOff]('click', '[data-mz-action="signup"]', this.signup);
+            this.$parent[onOrOff]('keypress', 'input', this.handleEnterKey);
+        },
+        handleEnterKey: function(e) {
+            if (e.which === 13) { this.signup(); }
+        },
+        validate: function(email, firstname, lastname) {
+            if (!email) return this.displayMessage(Hypr.getLabel('emailMissing')), false;
+            if (!(backbone.Validation.patterns.email.test(email))) return this.displayMessage(Hypr.getLabel('emailwrongpattern')), false;
+            return true;
+        },
+        signup: function() {
+            var self = this,
+                email = this.$parent.find('[data-mz-signup-emailaddress]').val(),
+                firstName = this.$parent.find('[data-mz-signup-firstname]').val(),
+                lastName = this.$parent.find('[data-mz-signup-lastname]').val();
+            var pageType = HyprLiveContext.locals.themeSettings.pageType;
+            if (this.validate(email, firstName, lastName)) {
+                var serviceurl = '/events/emailsignup?emailAddress=' +email+ '&firstName='+firstName + '&lastName='+lastName+'&isMarketingEnabled=true';
+                var apiData = require.mozuData('apicontext');
+                $.ajax({
+                    url: serviceurl,
+                    headers: apiData.headers,
+                    method: 'GET',
+                    success: function(res) {
+                        if(res){
+                            $('.mz-signupform').hide();
+                            $('.register-success-panel').show();
+                        }
+                    }
+                });
+            }
+        }
+    });
+    var MyAccountPopover = function(e){
+        var self = this;
+        this.init = function(el){
+            self.popoverEl = $('#my-account-content');
+            self.bindListeners.call(el, true);
+            $('#my-account').attr('href','#');
+        };
+        this.bindListeners =  function (on) {
+            var onOrOff = on ? "on" : "off";
+            //$(this).parent()[onOrOff]('mouseover', '[data-mz-action="my-account"]', self.openPopover);
+            $(this).parent()[onOrOff]('click', '[data-mz-action="my-account"]', self.openPopover);
+            // bind other events
+        };
+        this.openPopover = function(e){
+            //self.popoverEl.popover('show');
+            e.preventDefault();
+            $("#my-account").popover({
+                html : true,
+                placement : 'bottom',
+                content: function() {
+                  return self.popoverEl.html();
+                }
+            }); //.popover('show');
+        };
+    };
 
+    var LoginRegistrationModal = function(){
+        var self = this;
+        this.init = function(el){
+            self.modalEl = $('#liteRegistrationModal');
+            self.bindListeners.call(el, true);
+            self.doLogin = _.debounce(self.doLogin, 150);
+            self.doSignup = _.debounce(self.doSignup, 150);
+            api.get('attributedefinition').then(function(attribute) {
+                // console.log(attribute.data.items);
+                for(var i=0; i< attribute.data.items.length; i++){
+                    if(attribute.data.items[i].attributeCode === "recovery-question"){
+                        var recVals = attribute.data.items[i].vocabularyValues;
+                        for(var j=0; j<recVals.length; j++){
+                            $('<option/>').text(recVals[j].content.value).attr('value',recVals[j].value).appendTo('#recoveryQuestionList');
+                        }
+                    }
+                }
+            });
+        };
+
+        this.bindListeners =  function (on) {
+            var onOrOff = on ? "on" : "off";
+            $(this).parent()[onOrOff]('click', '[data-mz-action="lite-registration"]', self.openLiteModal);
+            $(this).parents('.mz-utilitynav')[onOrOff]('click', '[data-mz-action="doLogin"]', self.doLogin);
+            $(this).parents('.mz-utilitynav')[onOrOff]('click', '[data-mz-action="doSignup"]', self.doSignup);
+
+            // bind other events
+        };
+
+        this.openLiteModal = function(){
+            if (self.modalEl[0] == $("#liteRegistrationModal")[0]) {
+                $(".second-tab").show();
+                $(".third-tab").hide();
+            }
+            self.modalEl.modal('show');
+        };
+
+        this.doLogin = function(){
+            //console.log("Write business logic for Login form submition");
+            var returnUrl = $('#returnUrl').val();
+            var payload = {
+                email: $(this).parents('#login').find('[data-mz-login-email]').val(),
+                password: $(this).parents('#login').find('[data-mz-login-password]').val()
+            };
+            current = this;
+            if (self.validateLogin(this, payload) && self.validatePassword(this, payload)) {
+                //var user = api.createSync('user', payload);
+                (LoginPopover.prototype).newsetLoading(true);
+                return api.action('customer', 'loginStorefront', {
+                    email: $(this).parents('#login').find('[data-mz-login-email]').val(),
+                    password: $(this).parents('#login').find('[data-mz-login-password]').val()
+                }).then(function () {
+                    if ( returnUrl ){
+                        window.location.href= returnUrl;
+                    }else{
+                        window.location.reload();
+                    }
+                }, (LoginPopover.prototype).newdisplayApiMessage);
+            }
+        };
+        this.validateLogin = function (el, payload) {
+            if (!payload.email) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('emailMissing')), false;
+            if (!(/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(payload.email))) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('emailwrongpattern')), false;
+            return true;
+        };
+        this.doSignup = function(){
+            var redirectTemplate = 'myaccount';
+            var returnUrl = $('#returnUrl').val();
+            var emailupdates = $(this).parents('#newshopper').find('[data-mz-signup-emailupdates]').val();
+            var accMarketing = false;
+            if(emailupdates === "on")
+                accMarketing = true;
+            var email = $(this).parents('#newshopper').find('[data-mz-signup-emailaddress]').val().trim();
+            var recoveryquestion = $(this).parents('#newshopper').find('[data-mz-signup-recoveryquestion]').val();
+            var recoveryanswer = $(this).parents('#newshopper').find('[data-mz-signup-recoveryanswer]').val().trim();
+            var payload = {
+                account: {
+                    emailAddress: email,
+                    userName: email,
+                    acceptsMarketing: accMarketing,
+                    contacts: [{
+                        email: email
+                    }],
+                    attributes: [
+                      {
+                         //"attributeDefinitionId": "14",
+                         "fullyQualifiedName": "tenant~recovery-question",
+                         "values": [recoveryquestion]
+                      },
+                      {
+                         //"attributeDefinitionId": "16",
+                         "fullyQualifiedName": "tenant~recovery-answer",
+                         "values": [recoveryanswer]
+                      }
+                   ]
+                },
+                password: $(this).parents('#newshopper').find('[data-mz-signup-password]').val()
+            };
+            current = this;
+            if (self.validateSignup(this, payload) && self.validatePassword(this, payload)) {
+                //var user = api.createSync('user', payload);
+                (LoginPopover.prototype).newsetLoading(true);
+                return api.action('customer', 'createStorefront', payload).then(function () {
+                    if(returnUrl){
+                        window.location.href = returnUrl;
+                    }else if (redirectTemplate) {
+                        window.location.pathname = redirectTemplate;
+                    } else {
+                        window.location.reload();
+                    }
+                }, (LoginPopover.prototype).newdisplayApiMessage);
+            }
+        };
+        this.validatePassword = function(el, payload){
+            if (!payload.password)
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordMissing')), false;
+            if (payload.password.length < 6) {
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordlength')), false;
+            } else if (payload.password.length > 50) {
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordlength')), false;
+            } else if (payload.password.search(/\d/) == -1) {
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordlength')), false;
+            } else if (payload.password.search(/[a-zA-Z]/) == -1) {
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordlength')), false;
+            } else if (payload.password.search(/[^a-zA-Z0-9\!\@\#\$\%\^\&\*\(\)\_\+\.\,\;\:]/) != -1) {
+                return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordlength')), false;
+            }
+            return true;
+        };
+        this.validateSignup = function (el, payload) {
+            if (!payload.account.emailAddress) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('emailMissing')), false;
+            if (!(/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(payload.account.emailAddress))) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('emailwrongpattern')), false;
+            if (payload.password !== $(el).parents('#newshopper').find('[data-mz-signup-confirmpassword]').val()) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('passwordsDoNotMatch')), false;
+            if (payload.account.attributes.recoveryquestion === "0") return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('chooseRecoveryQuestion')), false;
+            if($('#recoveryQuestionList').val() === "0") return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('chooseRecoveryQuestion')), false;
+            if(!$('#recoveryAnswer').val()) return (LoginPopover.prototype).newdisplayMessage(el, Hypr.getLabel('recoveryAnswerMissing')), false;
+            return true;
+        };
+    };
     $(document).ready(function() {
         $docBody = $(document.body);
+
+        $('[data-mz-action="lite-registration"]').each(function() {
+            var modal = new LoginRegistrationModal();
+            modal.init(this);
+        });
+        $('#my-account').attr('href','#');
+        $('[data-mz-action="my-account"]').click(function() {
+            var popover = new MyAccountPopover();
+            popover.init(this);
+            $(this).data('mz.popover', popover);
+        });
+        $("#my-account").popover({
+                html : true,
+                placement : 'bottom',
+                content: function() {
+                  return $('#my-account-content').html();
+                }
+            });
+        /*$('[data-mz-action="my-account"]').hover(function() {
+            var popover = new MyAccountPopover();
+            popover.init(this);
+            $(this).data('mz.popover', popover);
+        });
+        $(document).on('mouseleave','#mz-logged-in-notice',function(){
+            $('#my-account').popover('hide');
+        });
+        */
+        $('body').on('touchend click', function (e) {
+            //only buttons
+            if ($(e.target).data('toggle') !== 'popover' && !$(e.target).parents().is('.popover.in')) {
+                $('[data-toggle="popover"]').popover('hide');
+            }
+        });
 
         $('[data-mz-action="login"]').each(function() {
             var popover = new LoginPopover();
@@ -6659,6 +9144,12 @@ define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/boot
             var popover = new SignupPopover();
             popover.init(this);
             $(this).data('mz.popover', popover);
+        });
+        $('[data-mz-action=emailSignuppage-submit]').each(function(e) {
+            var loginPage = new EmailSignupPopover();
+            loginPage.formSelector = 'form[name="mz-emailSignupform"]';
+            loginPage.pageType = 'signup';
+            loginPage.init(this);
         });
         $('[data-mz-action="continueAsGuest"]').on('click', function(e) {
             e.preventDefault();
@@ -6708,6 +9199,14 @@ define('modules/login-links',['shim!vendor/bootstrap/js/popover[shim!vendor/boot
             loginPage.init(this);
         });
 
+        $(".ml-navbar-secondary .panel-body").each(function() {
+            var headingElemnt = $(this).parent().parent().find("a[aria-controls]");
+            if ($(this).text().trim() === "" && headingElemnt.data("target")) {
+                headingElemnt.find("span").hide();
+                headingElemnt.attr("href", "/c/" + headingElemnt.data("target").replace("#sub-nav-", "").replace("#main-nav-", ""));
+                headingElemnt.removeAttr("aria-expanded aria-controls data-toggle role");
+            }
+          });
         $('[data-mz-action="quickOrder"]').on('click', function(e){
               // The Quick Order link takes us to the my account page and opens
               // the appropriate pane.
@@ -6778,17 +9277,25 @@ define(
             JP: true,
             TW: true
         },
-        defaultStateProv = "n/a",
-        defaultZipCode = "n/a"; 
-            //Zip code can not be empty in order for {order}method/payments to work correctly 
-            
+            defaultStateProv = "n/a";
 
         var PhoneNumbers = Backbone.MozuModel.extend({
             validation: {
-                home: {
+                home: [
+                {
                     required: true,
                     msg: Hypr.getLabel("phoneMissing")
-                }
+                },{
+                    pattern: "digits",
+                    msg: Hypr.getLabel("invalidPhone")
+                },{
+                    minLength: 10,
+                    maxLength: 20,
+                    msg: Hypr.getLabel("invalidPhone")
+                },{
+                    pattern: /^((\+)?[1-9]{1,2})?([-\s\.])?((\(\d{1,4}\))|\d{1,4})(([-\s\.])?[0-9]{1,12}){1,2}$/,
+                    msg: Hypr.getLabel("invalidPhone")
+                }]
             }
         }),
 
@@ -6806,6 +9313,9 @@ define(
                     required: true,
                     msg: Hypr.getLabel("streetMissing")
                 },
+                address2: {
+                    fn: "address2Validation"
+                },
                 cityOrTown: {
                     required: true,
                     msg: Hypr.getLabel("cityMissing")
@@ -6814,18 +9324,27 @@ define(
                     required: true,
                     msg: Hypr.getLabel("countryMissing")
                 },
+                addressType: {
+                    required: true,
+                    msg: Hypr.getLabel("addressTypeMissing")
+                },
                 stateOrProvince: {
                     fn: "requiresStateAndZip",
                     msg: Hypr.getLabel("stateProvMissing")
                 },
-                postalOrZipCode: {
-                    fn: "requiresStateAndZip",
-                    msg: Hypr.getLabel("postalCodeMissing")
-                },
-                addressType: {
+                postalOrZipCode: [{
                     required: true,
-                    msg: Hypr.getLabel("addressTypeMissing")
-                }
+                    msg: Hypr.getLabel("postalCodeMissing")
+                },{
+                    pattern: /(^\d{5}$)|(^\d{5}-\d{4}$)/,
+                    msg: Hypr.getLabel("invalidZipcode")
+                }]                
+            },
+            address2Validation: function(){
+                    if(this.get('address1')===this.get('address2')){
+                        this.set('address2',null);
+                    }
+                    return false;
             },
             requiresStateAndZip: function(value, attr) {
                 if ((this.get('countryCode') in countriesRequiringStateAndZip) && !value) return this.validation[attr.split('.').pop()].msg;
@@ -6844,12 +9363,6 @@ define(
                 if (options && options.helpers && j.stateOrProvince === defaultStateProv) {
                     delete j.stateOrProvince;
                 }
-                if ((!options || !options.helpers) && !j.postalOrZipCode) { 
-                    j.postalOrZipCode = defaultZipCode; 
-                } 
-                if (options && options.helpers && j.postalOrZipCode === defaultZipCode) { 
-                    delete j.postalOrZipCode; 
-                } 
                 return j;
             },
             is: function(another) {
@@ -6872,480 +9385,6 @@ define(
             StreetAddress: StreetAddress
         };
     });
-
-define('modules/models-price',["underscore", "modules/backbone-mozu"], function (_, Backbone) {
-
-    var ProductPrice = Backbone.MozuModel.extend({
-        dataTypes: {
-            price: Backbone.MozuModel.DataTypes.Float,
-            salePrice: Backbone.MozuModel.DataTypes.Float,
-            offerPrice: Backbone.MozuModel.DataTypes.Float
-        },
-        helpers: ['onSale'],
-        onSale: function() {
-            var salePrice = this.get('salePrice');
-            return salePrice !== null && !isNaN(salePrice) && salePrice !== this.get("price");
-        }
-    }),
-
-    ProductPriceRange = Backbone.MozuModel.extend({
-        relations: {
-            lower: ProductPrice,
-            upper: ProductPrice
-        }
-    });
-
-    return {
-        ProductPrice: ProductPrice,
-        ProductPriceRange: ProductPriceRange
-    };
-
-});
-define('modules/models-product',["modules/jquery-mozu", "underscore", "modules/backbone-mozu", "hyprlive", "modules/models-price", "modules/api",
-    "hyprlivecontext"], function($, _, Backbone, Hypr, PriceModels, api,
-        HyprLiveContext) {
-
-    function zeroPad(str, len) {
-        str = str.toString();
-        while (str.length < 2) str = '0' + str;
-        return str;
-    }
-    function formatDate(d) {
-        var date = new Date(Date.parse(d) + (new Date()).getTimezoneOffset() * 60000);
-        return [zeroPad(date.getFullYear(), 4), zeroPad(date.getMonth() + 1, 2), zeroPad(date.getDate(), 2)].join('-');
-    }
-
-
-    var ProductOption = Backbone.MozuModel.extend({
-        helpers: ['isChecked'],
-        initialize: function() {
-            var me = this;
-            _.defer(function() {
-                me.listenTo(me.collection, 'invalidoptionselected', me.handleInvalid, me);
-            });
-
-            var equalsThisValue = function(fvalue, newVal) {
-                return fvalue.value.toString() === newVal.toString();
-            },
-            containsThisValue = function(existingOptionValueListing, newVal) {
-                return _.some(newVal, function(val) {
-                    return equalsThisValue(existingOptionValueListing, val);
-                });
-            },
-            attributeDetail = me.get('attributeDetail');
-            if (attributeDetail) {
-                if (attributeDetail.valueType === ProductOption.Constants.ValueTypes.Predefined) {
-                    this.legalValues = _.chain(this.get('values')).pluck('value').map(function(v) { return !_.isUndefined(v) && !_.isNull(v) ? v.toString() : v; }).value();
-                }
-                if (attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo) {
-                    me.on('change:value', function(model, newVal) {
-                        var values;
-                        if (me.previous('value') !== newVal) {
-                            values = me.get('values');
-                            _.first(values).isSelected = newVal;
-                            me.set({
-                                value: newVal,
-                                shopperEnteredValue: newVal,
-                                values: values
-                            }, {
-                                silent: true
-                            });
-                            me.trigger('optionchange', newVal, me);
-                        }
-                    });
-                } else {
-                    me.on("change:value", function(model, newVal) {
-                        var newValObj, values = me.get("values"),
-                            comparator = this.get('isMultiValue') ? containsThisValue : equalsThisValue;
-                        if (typeof newVal === "string") newVal = $.trim(newVal);
-                        if (newVal || newVal === false || newVal === 0 || newVal === '') {
-                            _.each(values, function(fvalue) {
-                                if (comparator(fvalue, newVal)) {
-                                    newValObj = fvalue;
-                                    fvalue.isSelected = true;
-                                    me.set("value", newVal, { silent: true });
-                                } else {
-                                    fvalue.isSelected = false;
-                                }
-                            });
-                            me.set("values", values);
-                            if (me.get("attributeDetail").valueType === ProductOption.Constants.ValueTypes.ShopperEntered) {
-                                me.set("shopperEnteredValue", newVal, { silent: true });
-                            }
-                        } else {
-                            me.unset('value');
-                            me.unset("shopperEnteredValue");
-                        }
-                        if (newValObj && !newValObj.isEnabled) me.collection.trigger('invalidoptionselected', newValObj, me);
-                        me.trigger('optionchange', newVal, me);
-                    });
-                }
-            }
-        },
-        handleInvalid: function(newValObj, opt) {
-            if (this !== opt && !newValObj.autoAddEnabled) {
-                this.unset("value");
-                _.each(this.get("values"), function(value) {
-                    value.isSelected = false;
-                });
-            }
-        },
-        parse: function(raw) {
-            var selectedValue, vals, storedShopperValue;
-            if (raw.isMultiValue) {
-                vals = _.pluck(_.where(raw.values, { isSelected: true }), 'value');
-                if (vals && vals.length > 0) raw.value = vals;
-            } else {
-                selectedValue = _.findWhere(raw.values, { isSelected: true });
-                if (selectedValue) raw.value = selectedValue.value;
-            }
-            if (raw.attributeDetail) {
-                if (raw.attributeDetail.valueType !== ProductOption.Constants.ValueTypes.Predefined) {
-                    storedShopperValue = raw.values[0] && raw.values[0].shopperEnteredValue;
-                    if (storedShopperValue || storedShopperValue === 0) {
-                        raw.shopperEnteredValue = storedShopperValue;
-                        raw.value = storedShopperValue;
-                    }
-                }
-                if (raw.attributeDetail.inputType === ProductOption.Constants.InputTypes.Date && raw.attributeDetail.validation) {
-                    raw.minDate = formatDate(raw.attributeDetail.validation.minDateValue);
-                    raw.maxDate = formatDate(raw.attributeDetail.validation.maxDateValue);
-                }
-            }
-            return raw;
-        },
-        isChecked: function() {
-            var attributeDetail = this.get('attributeDetail'),
-                values = this.get('values');
-
-            return !!(attributeDetail && attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo && values && this.get('shopperEnteredValue'));
-        },
-        isValidValue: function() {
-            var value = this.getValueOrShopperEnteredValue();
-            return value !== undefined && value !== '' && (this.get('attributeDetail').valueType !== ProductOption.Constants.ValueTypes.Predefined || (this.get('isMultiValue') ? !_.difference(_.map(value, function(v) { return v.toString(); }), this.legalValues).length : _.contains(this.legalValues, value.toString())));
-        },
-        getValueOrShopperEnteredValue: function() {
-            return this.get('value') || (this.get('value') === 0) ? this.get('value') : this.get('shopperEnteredValue');
-        },
-        isConfigured: function() {
-            var attributeDetail = this.get('attributeDetail');
-            if (!attributeDetail) return true; // if attributeDetail is missing, this is a preconfigured product
-            return attributeDetail.inputType === ProductOption.Constants.InputTypes.YesNo ? this.isChecked() : this.isValidValue();
-        },
-        toJSON: function(options) {
-            var j = Backbone.MozuModel.prototype.toJSON.apply(this, arguments);
-            if (j && j.attributeDetail && j.attributeDetail.valueType !== ProductOption.Constants.ValueTypes.Predefined && this.isConfigured()) {
-                var val = j.value || j.shopperEnteredValue;
-                if (j.attributeDetail.dataType === "Number") val = parseFloat(val);
-                j.shopperEnteredValue = j.value = val;
-            }
-
-            return j;
-        },
-        addConfiguration: function(biscuit, options) {
-            var fqn, value, attributeDetail, valueKey, pushConfigObject, optionName;
-            if (this.isConfigured()) {
-                if (options && options.unabridged) {
-                    biscuit.push(this.toJSON());
-                } else {
-                    fqn = this.get('attributeFQN');
-                    value = this.getValueOrShopperEnteredValue();
-                    attributeDetail = this.get('attributeDetail');
-                    optionName = attributeDetail.name;
-                    valueKey = attributeDetail.valueType === ProductOption.Constants.ValueTypes.ShopperEntered ? "shopperEnteredValue" : "value";
-                    if (attributeDetail.dataType === "Number") value = parseFloat(value);
-                    pushConfigObject = function(val) {
-                        var o = {
-                            attributeFQN: fqn,
-                            name: optionName
-                        };
-                        o[valueKey] = val;
-                        biscuit.push(o);
-                    };
-                    if (_.isArray(value)) {
-                        _.each(value, pushConfigObject);
-                    } else {
-                        pushConfigObject(value);
-                    }
-                }
-            }
-        }
-    }, {
-        Constants: {
-            ValueTypes: {
-                Predefined: "Predefined",
-                ShopperEntered: "ShopperEntered",
-                AdminEntered: "AdminEntered"
-            },
-            InputTypes: {
-                List: "List",
-                YesNo: "YesNo",
-                Date: "Date"
-            }
-        }
-    }),
-
-    ProductContent = Backbone.MozuModel.extend({}),
-
-    Product = Backbone.MozuModel.extend({
-        mozuType: 'product',
-        idAttribute: 'productCode',
-        handlesMessages: true,
-        helpers: ['mainImage', 'notDoneConfiguring', 'hasPriceRange', 'supportsInStorePickup', 'isPurchasable','hasVolumePricing'],
-        defaults: {
-            purchasableState: {},
-            quantity: 1
-        },
-        dataTypes: {
-            quantity: Backbone.MozuModel.DataTypes.Int
-        },
-        validation: {
-            quantity: {
-                min: 1,
-                msg: Hypr.getLabel('enterProductQuantity')
-            }
-        },
-        relations: {
-            content: ProductContent,
-            price: PriceModels.ProductPrice,
-            priceRange: PriceModels.ProductPriceRange,
-            options: Backbone.Collection.extend({
-                model: ProductOption
-            })
-        },
-        getBundledProductProperties: function(opts) {
-            var self = this,
-                loud = !opts || !opts.silent;
-            if (loud) {
-                this.isLoading(true);
-                this.trigger('request');
-            }
-
-            var bundledProducts = this.get('bundledProducts'),
-                numReqs = bundledProducts.length,
-                deferred = api.defer();
-            _.each(bundledProducts, function(bp) {
-                var op = api.get('product', bp.productCode);
-                op.ensure(function() {
-                    if (--numReqs === 0) {
-                        _.defer(function() {
-                            self.set('bundledProducts', bundledProducts);
-                            if (loud) {
-                                this.trigger('sync', bundledProducts);
-                                this.isLoading(false);
-                            }
-                            deferred.resolve(bundledProducts);
-                        });
-                    }
-                });
-                op.then(function(p) {
-                    _.each(p.prop('properties'), function(prop) {
-                        if (!prop.values || prop.values.length === 0 || prop.values[0].value === '' || prop.values[0].stringValue === '') {
-                            prop.isEmpty = true;
-                        }
-                    });
-                    _.extend(bp, p.data);
-                });
-            });
-
-            return deferred.promise;
-        },
-        hasPriceRange: function() {
-            return this._hasPriceRange;
-        },
-        hasVolumePricing: function() {
-            return this._hasVolumePricing;
-        },
-        calculateHasPriceRange: function(json) {
-            this._hasPriceRange = json && !!json.priceRange;
-        },
-        initialize: function(conf) {
-            var slug = this.get('content').get('seoFriendlyUrl');
-            _.bindAll(this, 'calculateHasPriceRange', 'onOptionChange');
-            this.listenTo(this.get("options"), "optionchange", this.onOptionChange);
-            this._hasVolumePricing = false;
-            this._minQty = 1;
-            if (this.get('volumePriceBands') && this.get('volumePriceBands').length > 0) {
-                this._hasVolumePricing = true;
-                this._minQty = _.first(this.get('volumePriceBands')).minQty;
-                if (this._minQty > 1) {
-                    if (this.get('quantity') <= 1) {
-                        this.set('quantity', this._minQty);
-                    }
-                    this.validation.quantity.msg = Hypr.getLabel('enterMinProductQuantity', this._minQty);
-                }
-            }
-            this.updateConfiguration = _.debounce(this.updateConfiguration, 300);
-            this.set({ url: (HyprLiveContext.locals.siteContext.siteSubdirectory || '') + (slug ? "/" + slug : "") +  "/p/" + this.get("productCode")});
-            this.lastConfiguration = [];
-            this.calculateHasPriceRange(conf);
-            this.on('sync', this.calculateHasPriceRange);
-        },
-        mainImage: function() {
-            var productImages = this.get('content.productImages');
-            return productImages && productImages[0];
-        },
-        notDoneConfiguring: function() {
-            return this.get('productUsage') === Product.Constants.ProductUsage.Configurable && !this.get('variationProductCode');
-        },
-        isPurchasable: function() {
-            var purchaseState = this.get('purchasableState');
-            if (purchaseState.isPurchasable){
-                return true;
-            }
-            if (this._hasVolumePricing && purchaseState.messages && purchaseState.messages.length === 1 && purchaseState.messages[0].validationType === 'MinQtyNotMet') {
-                return true;
-            }
-            return false;
-        },
-        supportsInStorePickup: function() {
-            return _.contains(this.get('fulfillmentTypesSupported'), Product.Constants.FulfillmentTypes.IN_STORE_PICKUP);
-        },
-        getConfiguredOptions: function(options) {
-            return this.get('options').reduce(function(biscuit, opt) {
-                opt.addConfiguration(biscuit, options);
-                return biscuit;
-            }, []);
-        },
-        addToCart: function (stopRedirect) {
-            var me = this;
-            return this.whenReady(function () {
-                if (!me.validate()) {
-                    var fulfillMethod = me.get('fulfillmentMethod');
-                    if (!fulfillMethod) {
-                        fulfillMethod = (me.get('goodsType') === 'Physical') ? Product.Constants.FulfillmentMethods.SHIP : Product.Constants.FulfillmentMethods.DIGITAL;
-                    }
-                    return me.apiAddToCart({
-                        options: me.getConfiguredOptions(),
-                        fulfillmentMethod: fulfillMethod,
-                        quantity: me.get("quantity")
-                    }).then(function (item) {
-                        me.trigger('addedtocart', item, stopRedirect);
-                    });
-                }
-            });
-        },
-        addToWishlist: function() {
-            var me = this;
-            this.whenReady(function() {
-                if (!me.validate()) {
-                    me.apiAddToWishlist({
-                        customerAccountId: require.mozuData('user').accountId,
-                        quantity: me.get("quantity"),
-                        options: me.getConfiguredOptions()
-                    }).then(function(item) {
-                        me.trigger('addedtowishlist', item);
-                    });
-                }
-            });
-        },
-        addToCartForPickup: function(locationCode, locationName, quantity) {
-            var me = this;
-            this.whenReady(function() {
-                return me.apiAddToCartForPickup({
-                    fulfillmentLocationCode: locationCode,
-                    fulfillmentMethod: Product.Constants.FulfillmentMethods.PICKUP,
-                    fulfillmentLocationName: locationName,
-                    quantity: quantity || 1
-                }).then(function(item) {
-                    me.trigger('addedtocart', item);
-                });
-            });
-        },
-        onOptionChange: function() {
-            this.isLoading(true);
-            this.updateConfiguration();
-        },
-        updateQuantity: function (newQty) {
-            if (this.get('quantity') === newQty) return;
-            this.set('quantity', newQty);
-            if (!this._hasVolumePricing) return;
-            if (newQty < this._minQty) {
-                return this.showBelowQuantityWarning();
-            }
-            this.isLoading(true);
-            this.apiConfigure({ options: this.getConfiguredOptions() }, { useExistingInstances: true });
-        },
-        showBelowQuantityWarning: function () {
-            this.validation.quantity.min = this._minQty;
-            this.validate();
-            this.validation.quantity.min = 1;
-        },
-        handleMixedVolumePricingTransitions: function (data) {
-            if (!data || !data.volumePriceBands || data.volumePriceBands.length === 0) return;
-            if (this._minQty === data.volumePriceBands[0].minQty) return;
-            this._minQty = data.volumePriceBands[0].minQty;
-            this.validation.quantity.msg = Hypr.getLabel('enterMinProductQuantity', this._minQty);
-            if (this.get('quantity') < this._minQty) {
-                this.updateQuantity(this._minQty);
-            }
-        },
-        updateConfiguration: function() {
-            var me = this,
-              newConfiguration = this.getConfiguredOptions();
-            if (JSON.stringify(this.lastConfiguration) !== JSON.stringify(newConfiguration)) {
-                this.lastConfiguration = newConfiguration;
-                this.apiConfigure({ options: newConfiguration }, { useExistingInstances: true })
-                    .then(function (apiModel) {
-                        if (me._hasVolumePricing) {
-                            me.handleMixedVolumePricingTransitions(apiModel.data);
-                        }
-                        me.trigger('optionsUpdated');
-                     });
-            } else {
-                this.isLoading(false);
-            }
-        },
-        parse: function(prodJSON) {
-            if (prodJSON && prodJSON.productCode && !prodJSON.variationProductCode) {
-                this.unset('variationProductCode');
-            }
-            return prodJSON;
-        },
-        toJSON: function(options) {
-            var j = Backbone.MozuModel.prototype.toJSON.apply(this, arguments);
-            if (!options || !options.helpers) {
-                j.options = this.getConfiguredOptions({ unabridged: true });
-            }
-            if (options && options.helpers) {
-                if (typeof j.mfgPartNumber == "string") j.mfgPartNumber = [j.mfgPartNumber];
-                if (typeof j.upc == "string") j.upc = [j.upc];
-                if (j.bundledProducts && j.bundledProducts.length === 0) delete j.bundledProducts;
-            }
-            return j;
-        }
-    }, {
-        Constants: {
-            FulfillmentMethods: {
-                SHIP: "Ship",
-                PICKUP: "Pickup",
-                DIGITAL: "Digital"
-            },
-            // for catalog instead of commerce
-            FulfillmentTypes: {
-                IN_STORE_PICKUP: "InStorePickup"
-            },
-            ProductUsage: {
-                Configurable: 'Configurable'
-            }
-        }
-    }),
-
-    ProductCollection = Backbone.MozuModel.extend({
-        relations: {
-            items: Backbone.Collection.extend({
-                model: Product
-            })
-        }
-    });
-
-    return {
-        Product: Product,
-        Option: ProductOption,
-        ProductCollection: ProductCollection
-    };
-
-});
 
 define('modules/models-returns',["modules/api", 'underscore', "modules/backbone-mozu", "hyprlive", "modules/models-product"], function (api, _, Backbone, Hypr, ProductModels) {
  var ReturnableItems = Backbone.MozuModel.extend({
@@ -8193,7 +10232,7 @@ define('modules/models-paymentmethods',['modules/jquery-mozu', 'underscore', 'mo
     var CreditCardWithCVV = CreditCard.extend({
         validation: _.extend({}, CreditCard.prototype.validation, {
             cvv: {
-                fn: function(value, attr) {
+                fn: function(value, attr, computed) {
                     var cardType = attr.split('.')[0],
                         card = this.get(cardType),
                         isSavedCard = card.get('isSavedCard'),
@@ -8209,6 +10248,31 @@ define('modules/models-paymentmethods',['modules/jquery-mozu', 'underscore', 'mo
 
                     if (!value) {
                         return Hypr.getLabel('securityCodeMissing') || Hypr.getLabel('genericRequired');
+                    }
+                    //check for length
+                    //AMEX 4 chars and others are 3
+                    var type = computed.card.get("paymentOrCardType");
+                    if(type==="AMEX"){
+                        if(value.length !== 4){
+                           return Hypr.getLabel('genericLength','CVV2', 4);
+                        }
+                    }
+                    else{
+                        if(value.length !== 3){
+                           return Hypr.getLabel('genericLength','CVV2', 3);
+                        }
+                    }
+
+                }
+            },
+            savedPaymentMethodId: {
+                fn: function(value, attr, computed) {
+                    var cardType = attr.split('.')[0],
+                        card = this.get(cardType),
+                        isSavedCard = card.get('isSavedCard');
+
+                    if(!computed.savedPaymentMethodId && isSavedCard){
+                         return Hypr.getLabel('selectASavedCard') || Hypr.getLabel('genericRequired');
                     }
                 }
             }
@@ -8475,6 +10539,53 @@ define('modules/models-paymentmethods',['modules/jquery-mozu', 'underscore', 'mo
     };
 });
 
+!function(){function e(e){function t(t,n){var s,h,k=t==window,y=n&&void 0!==n.message?n.message:void 0;if(n=e.extend({},e.blockUI.defaults,n||{}),!n.ignoreIfBlocked||!e(t).data("blockUI.isBlocked")){if(n.overlayCSS=e.extend({},e.blockUI.defaults.overlayCSS,n.overlayCSS||{}),s=e.extend({},e.blockUI.defaults.css,n.css||{}),n.onOverlayClick&&(n.overlayCSS.cursor="pointer"),h=e.extend({},e.blockUI.defaults.themedCSS,n.themedCSS||{}),y=void 0===y?n.message:y,k&&p&&o(window,{fadeOut:0}),y&&"string"!=typeof y&&(y.parentNode||y.jquery)){var m=y.jquery?y[0]:y,v={};e(t).data("blockUI.history",v),v.el=m,v.parent=m.parentNode,v.display=m.style.display,v.position=m.style.position,v.parent&&v.parent.removeChild(m)}e(t).data("blockUI.onUnblock",n.onUnblock);var g,I,w,U,x=n.baseZ;g=e(r||n.forceIframe?'<iframe class="blockUI" style="z-index:'+x++ +';display:none;border:none;margin:0;padding:0;position:absolute;width:100%;height:100%;top:0;left:0" src="'+n.iframeSrc+'"></iframe>':'<div class="blockUI" style="display:none"></div>'),I=e(n.theme?'<div class="blockUI blockOverlay ui-widget-overlay" style="z-index:'+x++ +';display:none"></div>':'<div class="blockUI blockOverlay" style="z-index:'+x++ +';display:none;border:none;margin:0;padding:0;width:100%;height:100%;top:0;left:0"></div>'),n.theme&&k?(U='<div class="blockUI '+n.blockMsgClass+' blockPage ui-dialog ui-widget ui-corner-all" style="z-index:'+(x+10)+';display:none;position:fixed">',n.title&&(U+='<div class="ui-widget-header ui-dialog-titlebar ui-corner-all blockTitle">'+(n.title||"&nbsp;")+"</div>"),U+='<div class="ui-widget-content ui-dialog-content"></div>',U+="</div>"):n.theme?(U='<div class="blockUI '+n.blockMsgClass+' blockElement ui-dialog ui-widget ui-corner-all" style="z-index:'+(x+10)+';display:none;position:absolute">',n.title&&(U+='<div class="ui-widget-header ui-dialog-titlebar ui-corner-all blockTitle">'+(n.title||"&nbsp;")+"</div>"),U+='<div class="ui-widget-content ui-dialog-content"></div>',U+="</div>"):U=k?'<div class="blockUI '+n.blockMsgClass+' blockPage" style="z-index:'+(x+10)+';display:none;position:fixed"></div>':'<div class="blockUI '+n.blockMsgClass+' blockElement" style="z-index:'+(x+10)+';display:none;position:absolute"></div>',w=e(U),y&&(n.theme?(w.css(h),w.addClass("ui-widget-content")):w.css(s)),n.theme||I.css(n.overlayCSS),I.css("position",k?"fixed":"absolute"),(r||n.forceIframe)&&g.css("opacity",0);var C=[g,I,w],S=e(k?"body":t);e.each(C,function(){this.appendTo(S)}),n.theme&&n.draggable&&e.fn.draggable&&w.draggable({handle:".ui-dialog-titlebar",cancel:"li"});var O=f&&(!e.support.boxModel||e("object,embed",k?null:t).length>0);if(u||O){if(k&&n.allowBodyStretch&&e.support.boxModel&&e("html,body").css("height","100%"),(u||!e.support.boxModel)&&!k)var E=d(t,"borderTopWidth"),T=d(t,"borderLeftWidth"),M=E?"(0 - "+E+")":0,B=T?"(0 - "+T+")":0;e.each(C,function(e,t){var o=t[0].style;if(o.position="absolute",2>e)k?o.setExpression("height","Math.max(document.body.scrollHeight, document.body.offsetHeight) - (jQuery.support.boxModel?0:"+n.quirksmodeOffsetHack+') + "px"'):o.setExpression("height",'this.parentNode.offsetHeight + "px"'),k?o.setExpression("width",'jQuery.support.boxModel && document.documentElement.clientWidth || document.body.clientWidth + "px"'):o.setExpression("width",'this.parentNode.offsetWidth + "px"'),B&&o.setExpression("left",B),M&&o.setExpression("top",M);else if(n.centerY)k&&o.setExpression("top",'(document.documentElement.clientHeight || document.body.clientHeight) / 2 - (this.offsetHeight / 2) + (blah = document.documentElement.scrollTop ? document.documentElement.scrollTop : document.body.scrollTop) + "px"'),o.marginTop=0;else if(!n.centerY&&k){var i=n.css&&n.css.top?parseInt(n.css.top,10):0,s="((document.documentElement.scrollTop ? document.documentElement.scrollTop : document.body.scrollTop) + "+i+') + "px"';o.setExpression("top",s)}})}if(y&&(n.theme?w.find(".ui-widget-content").append(y):w.append(y),(y.jquery||y.nodeType)&&e(y).show()),(r||n.forceIframe)&&n.showOverlay&&g.show(),n.fadeIn){var j=n.onBlock?n.onBlock:c,H=n.showOverlay&&!y?j:c,z=y?j:c;n.showOverlay&&I._fadeIn(n.fadeIn,H),y&&w._fadeIn(n.fadeIn,z)}else n.showOverlay&&I.show(),y&&w.show(),n.onBlock&&n.onBlock.bind(w)();if(i(1,t,n),k?(p=w[0],b=e(n.focusableElements,p),n.focusInput&&setTimeout(l,20)):a(w[0],n.centerX,n.centerY),n.timeout){var W=setTimeout(function(){k?e.unblockUI(n):e(t).unblock(n)},n.timeout);e(t).data("blockUI.timeout",W)}}}function o(t,o){var s,l=t==window,a=e(t),d=a.data("blockUI.history"),c=a.data("blockUI.timeout");c&&(clearTimeout(c),a.removeData("blockUI.timeout")),o=e.extend({},e.blockUI.defaults,o||{}),i(0,t,o),null===o.onUnblock&&(o.onUnblock=a.data("blockUI.onUnblock"),a.removeData("blockUI.onUnblock"));var r;r=l?e("body").children().filter(".blockUI").add("body > .blockUI"):a.find(">.blockUI"),o.cursorReset&&(r.length>1&&(r[1].style.cursor=o.cursorReset),r.length>2&&(r[2].style.cursor=o.cursorReset)),l&&(p=b=null),o.fadeOut?(s=r.length,r.stop().fadeOut(o.fadeOut,function(){0===--s&&n(r,d,o,t)})):n(r,d,o,t)}function n(t,o,n,i){var s=e(i);if(!s.data("blockUI.isBlocked")){t.each(function(e,t){this.parentNode&&this.parentNode.removeChild(this)}),o&&o.el&&(o.el.style.display=o.display,o.el.style.position=o.position,o.el.style.cursor="default",o.parent&&o.parent.appendChild(o.el),s.removeData("blockUI.history")),s.data("blockUI.static")&&s.css("position","static"),"function"==typeof n.onUnblock&&n.onUnblock(i,n);var l=e(document.body),a=l.width(),d=l[0].style.width;l.width(a-1).width(a),l[0].style.width=d}}function i(t,o,n){var i=o==window,l=e(o);if((t||(!i||p)&&(i||l.data("blockUI.isBlocked")))&&(l.data("blockUI.isBlocked",t),i&&n.bindEvents&&(!t||n.showOverlay))){var a="mousedown mouseup keydown keypress keyup touchstart touchend touchmove";t?e(document).bind(a,n,s):e(document).unbind(a,s)}}function s(t){if("keydown"===t.type&&t.keyCode&&9==t.keyCode&&p&&t.data.constrainTabKey){var o=b,n=!t.shiftKey&&t.target===o[o.length-1],i=t.shiftKey&&t.target===o[0];if(n||i)return setTimeout(function(){l(i)},10),!1}var s=t.data,a=e(t.target);return a.hasClass("blockOverlay")&&s.onOverlayClick&&s.onOverlayClick(t),a.parents("div."+s.blockMsgClass).length>0?!0:0===a.parents().children().filter("div.blockUI").length}function l(e){if(b){var t=b[e===!0?b.length-1:0];t&&t.focus()}}function a(e,t,o){var n=e.parentNode,i=e.style,s=(n.offsetWidth-e.offsetWidth)/2-d(n,"borderLeftWidth"),l=(n.offsetHeight-e.offsetHeight)/2-d(n,"borderTopWidth");t&&(i.left=s>0?s+"px":"0"),o&&(i.top=l>0?l+"px":"0")}function d(t,o){return parseInt(e.css(t,o),10)||0}e.fn._fadeIn=e.fn.fadeIn;var c=e.noop||function(){},r=/MSIE/.test(navigator.userAgent),u=/MSIE 6.0/.test(navigator.userAgent)&&!/MSIE 8.0/.test(navigator.userAgent),f=(document.documentMode||0,e.isFunction(document.createElement("div").style.setExpression));e.blockUI=function(e){t(window,e)},e.unblockUI=function(e){o(window,e)},e.growlUI=function(t,o,n,i){var s=e('<div class="growlUI"></div>');t&&s.append("<h1>"+t+"</h1>"),o&&s.append("<h2>"+o+"</h2>"),void 0===n&&(n=3e3);var l=function(t){t=t||{},e.blockUI({message:s,fadeIn:"undefined"!=typeof t.fadeIn?t.fadeIn:700,fadeOut:"undefined"!=typeof t.fadeOut?t.fadeOut:1e3,timeout:"undefined"!=typeof t.timeout?t.timeout:n,centerY:!1,showOverlay:!1,onUnblock:i,css:e.blockUI.defaults.growlCSS})};l();s.css("opacity");s.mouseover(function(){l({fadeIn:0,timeout:3e4});var t=e(".blockMsg");t.stop(),t.fadeTo(300,1)}).mouseout(function(){e(".blockMsg").fadeOut(1e3)})},e.fn.block=function(o){if(this[0]===window)return e.blockUI(o),this;var n=e.extend({},e.blockUI.defaults,o||{});return this.each(function(){var t=e(this);n.ignoreIfBlocked&&t.data("blockUI.isBlocked")||t.unblock({fadeOut:0})}),this.each(function(){"static"==e.css(this,"position")&&(this.style.position="relative",e(this).data("blockUI.static",!0)),this.style.zoom=1,t(this,o)})},e.fn.unblock=function(t){return this[0]===window?(e.unblockUI(t),this):this.each(function(){o(this,t)})},e.blockUI.version=2.7,e.blockUI.defaults={message:"<h1>Please wait...</h1>",title:null,draggable:!0,theme:!1,css:{padding:0,margin:0,width:"30%",top:"40%",left:"35%",textAlign:"center",color:"#000",border:"3px solid #aaa",backgroundColor:"#fff",cursor:"wait"},themedCSS:{width:"30%",top:"40%",left:"35%"},overlayCSS:{backgroundColor:"#000",opacity:.6,cursor:"wait"},cursorReset:"default",growlCSS:{width:"350px",top:"10px",left:"",right:"10px",border:"none",padding:"5px",opacity:.6,cursor:"default",color:"#fff",backgroundColor:"#000","-webkit-border-radius":"10px","-moz-border-radius":"10px","border-radius":"10px"},iframeSrc:/^https/i.test(window.location.href||"")?"javascript:false":"about:blank",forceIframe:!1,baseZ:1e3,centerX:!0,centerY:!0,allowBodyStretch:!0,bindEvents:!0,constrainTabKey:!0,fadeIn:200,fadeOut:400,timeout:0,showOverlay:!0,focusInput:!0,focusableElements:":input:enabled:visible",onBlock:null,onUnblock:null,onOverlayClick:null,quirksmodeOffsetHack:4,blockMsgClass:"blockMsg",ignoreIfBlocked:!1};var p=null,b=[]}"function"==typeof define&&define.amd&&define.amd.jQuery?define('blockui',["jquery"],e):e(jQuery)}();
+define('modules/block-ui',[
+    'modules/jquery-mozu',
+    'blockui'
+], function($, blockui) {
+    var blockUiLoader = {
+        globalLoader: function() {
+            $.blockUI({
+                baseZ: 1100,
+                message: '<i class="fa fa-spinner fa-spin"></i>',
+                css: {
+                    border: 'none',
+                    padding: '15px',
+                    backgroundColor: 'transparent',
+                    '-webkit-border-radius': '10px',
+                    '-moz-border-radius': '10px',
+                    opacity: 1,
+                    color: '#fff',
+                    fontSize: '60px'
+                }
+            });
+        },
+        productValidationMessage: function() {
+            $.blockUI({
+                baseZ: 1050,
+                message: $('#SelectValidOption'),
+                css: {
+                    border: 'none',
+                    padding: '15px',
+                    backgroundColor: '#fff',
+                    opacity: 1,
+                    color: '#000',
+                    width: 'auto',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    fontSize: '14px'
+                }
+            });
+            $('.zoomContainer').remove();
+            $('#zoom').removeData('elevateZoom');
+        },
+        unblockUi: function() {
+            $.unblockUI();
+        }
+    };
+    return blockUiLoader;
+});
 define('modules/models-attributes',["underscore", "modules/backbone-mozu"], function (_, Backbone) {
 
     var customerAttritube = Backbone.MozuModel.extend({
@@ -8579,10 +10690,21 @@ define('modules/models-b2b-account',["underscore", "modules/backbone-mozu", "mod
     };
 });
 
-define('modules/models-customer',['modules/backbone-mozu', 'underscore', 'modules/models-address', 'modules/models-orders', 'modules/models-paymentmethods', 'modules/models-product', 'modules/models-returns', 'hyprlive', 'modules/models-b2b-account'], function (Backbone, _, AddressModels, OrderModels, PaymentMethods, ProductModels, ReturnModels, Hypr, B2BAccountModels) {
+define('modules/models-customer',['modules/backbone-mozu',
+        'underscore',
+        'modules/models-address',
+        'modules/models-orders',
+        'modules/models-paymentmethods',
+        'modules/models-product',
+        'modules/models-returns',
+        'hyprlive',
+        'hyprlivecontext',
+        'modules/block-ui',
+        'modules/backbone-mozu',
+        'modules/models-b2b-account'],
+function (Backbone, _, AddressModels, OrderModels, PaymentMethods, ProductModels, ReturnModels, Hypr,HyprLiveContext,blockUiLoader,$, B2BAccountModels) {
 
-
-    var pageContext = require.mozuData('pagecontext'),
+  var pageContext = require.mozuData('pagecontext'),
         validShippingCountryCodes,
         validBillingCountryCodes,
         validShippingAndBillingCountryCodes;
@@ -8660,7 +10782,7 @@ define('modules/models-customer',['modules/backbone-mozu', 'underscore', 'module
         mozuType: 'contact',
         requiredBehaviors: [1002],
         defaults: {
-            userId: require.mozuData('user').userId  
+            userId: require.mozuData('user').userId
         },
         relations: {
             address: AddressModels.StreetAddress,
@@ -8766,6 +10888,101 @@ define('modules/models-customer',['modules/backbone-mozu', 'underscore', 'module
             if (types) this.setTypeHelpers(null, types);
             this.on(contactTypeListeners);
             this.on('change:types', this.setTypeHelpers, this);
+        },
+        requestCatalog: function (options) {
+            var self = this,
+                editingContact = this,
+                apiContact;
+
+            if (options && options.forceIsValid) {
+                editingContact.set('address.isValidated', true);
+            }
+            var result = this.validate();
+
+            if (!this.validate()) {
+                var apiData = require.mozuData('apicontext');
+                var payload = {
+                    phone1: this.get('phoneNumbers.office') || '',
+                    phone2: this.get('phoneNumbers.home') || '',
+                    email: this.get('email') || '',
+                    dateCreated: (new Date()),
+                    firstName: this.get('firstName') || '',
+                    middleName: this.get('middleNameInitials') || '',
+                    lastName: this.get('lastNameOrSurname') || '',
+                    address1: this.get('address.address1') || '',
+                    address2: this.get('address.address2') || '',
+                    city: this.get('address.cityOrTown') || '',
+                    zipCode: this.get('address.postalOrZipCode') || '',
+                    state: this.get('address.stateOrProvince') || '',
+                    country: this.get('address.countryCode') || '',
+                    exportedDate: ''
+                };
+                var isMarketingEnabled = this.get('marketingEnabled') ? true : false;
+                var user = require.mozuData('user');
+                if (!user.isAnonymous) {
+                    payload.customerId = user.accountId;
+                    if(isMarketingEnabled){
+                        $.ajax({
+                            url: '/api/commerce/customer/accounts/'+user.accountId,
+                            headers: apiData.headers,
+                            method: 'GET',
+                            success: function(data) {
+                                if(!data.acceptsMarketing){
+                                    data.acceptsMarketing=true;
+                                    $.ajax({
+                                        url: '/api/commerce/customer/accounts/'+user.accountId,
+                                        headers: apiData.headers,
+                                        method: 'PUT',
+                                        data:data
+                                    });
+
+                                }
+                            }
+                        });
+                    }
+                    return $.ajax({
+                        url: '/api/platform/entitylists/requestCatalog%40ng/entities/?responseFields=',
+                        dataType: "json",
+                        contentType: "application/json; charset=utf-8",
+                        data: JSON.stringify(payload),
+                        method: 'POST',
+                        headers: apiData.headers
+                    });
+                } else {
+                    //create a new guest user and assign its guest ID
+                    var dfd = $.$.Deferred();
+                    $.ajax({
+                        url: '/api/commerce/customer/accounts',
+                        data: {
+                            firstName: payload.firstName,
+                            lastName: payload.lastName,
+                            acceptsMarketing: isMarketingEnabled,
+                            emailAddress: payload.email,
+                            isAnonymous: true
+                        },
+                        headers: apiData.headers,
+                        method: 'POST'
+                    }).then(function(response) {
+                        payload.customerId = response.id;
+                        $.ajax({
+                            url: '/api/platform/entitylists/requestCatalog%40ng/entities/?responseFields=',
+                            dataType: "json",
+                            contentType: "application/json; charset=utf-8",
+                            data: JSON.stringify(payload),
+                            method: 'POST',
+                            headers: apiData.headers,
+                            success:function(data){
+                                dfd.resolve(data);
+                            }
+                        });
+                    }, function(error) {
+                        //console.log("Show API error", error);
+                    });
+                    // Return the Promise so caller can't change the Deferred
+                    return dfd.promise();
+
+                }
+            }
         }
     }),
 
@@ -9060,27 +11277,99 @@ define('modules/models-customer',['modules/backbone-mozu', 'underscore', 'module
                 this.get('editingContact').set(toEdit.toJSON({ helpers: true, ensureCopy: true }), { silent: true });
         },
         endEditContact: function() {
-            var editingContact = this.get('editingContact');
+            var editingContact = this.get('editingContact'),
+            addressType = editingContact.get("address").get('addressType'),
+            countryCode = editingContact.get("address").get('countryCode');
             editingContact.clear();
             editingContact.set('accountId', this.get('id'));
+            editingContact.get("address").set('addressType',addressType);
+            editingContact.get("address").set('countryCode', countryCode);
+            editingContact.get("address").set('candidateValidatedAddresses', null);
         },
         saveContact: function (options) {
             var self = this,
                 editingContact = this.get('editingContact'),
-                apiContact;
-
-            if (options && options.forceIsValid) {
-                editingContact.set('address.isValidated', true);
-            }
-
-            var op = editingContact.save();
-            if (op) return op.then(function (contact) {
-                apiContact = contact;
-                self.endEditContact();
-                return self.getContacts();
-            }).then(function () {
-                return apiContact;
-            });
+                apiContact,
+                isAddressValidationEnabled = HyprLiveContext.locals.siteContext.generalSettings.isAddressValidationEnabled,
+                allowInvalidAddresses = HyprLiveContext.locals.siteContext.generalSettings.allowInvalidAddresses,
+                addr = editingContact.get("address");
+            if (!this.validate("editingContact")) {
+                if(isAddressValidationEnabled && !addr.get('isValidated')){
+                    if(typeof(addr.apiModel.data.address1) === "undefined"){
+                        addr.apiModel.data = addr.attributes;
+                    }
+                    if (!addr.get('candidateValidatedAddresses')) {
+                        var methodToUse = allowInvalidAddresses ? 'validateAddressLenient' : 'validateAddress';
+                        addr.apiModel[methodToUse]().then(function (resp) {
+                            if (resp.data && resp.data.addressCandidates && resp.data.addressCandidates.length) {
+                                if (_.find(resp.data.addressCandidates, addr.is, addr)) {
+                                    if(options.editingView)
+                                        options.editingView.editing.contact = false;
+                                    addr.set('isValidated', true);
+                                    var op = editingContact.save();
+                                    if (op) return op.then(function (contact) {
+                                        apiContact = contact;
+                                        self.endEditContact();
+                                        return self.getContacts();
+                                    }).then(function () {
+                                        blockUiLoader.unblockUi();
+                                        return apiContact;
+                                    });
+                                }
+                                else{
+                                    addr.set('candidateValidatedAddresses', resp.data.addressCandidates);
+                                    blockUiLoader.unblockUi();
+                                }
+                            }
+                        }, function (e) {
+                            if(allowInvalidAddresses){
+                                if(options.editingView)
+                                    options.editingView.editing.contact = false;
+                                editingContact.set('address.isValidated', true);
+                                var op = editingContact.save();
+                                if (op) return op.then(function(contact) {
+                                    apiContact = contact;
+                                    self.endEditContact();
+                                    return self.getContacts();
+                                }).then(function() {
+                                    blockUiLoader.unblockUi();
+                                    return apiContact;
+                                });
+                            }else{
+                                self.trigger('error', {message: Hypr.getLabel('addressValidationError')});
+                            }
+                            blockUiLoader.unblockUi();
+                        });
+                    }else{
+                        /*self.trigger('error', {message: Hypr.getLabel('addressValidationError')});
+                        blockUiLoader.unblockUi();
+                        return false;*/
+                        if(options.editingView)
+                            options.editingView.editing.contact = false;
+                        editingContact.set('address.isValidated', true);
+                        var opsData = editingContact.save();
+                        if (opsData) return opsData.then(function(contact) {
+                            apiContact = contact;
+                            self.endEditContact();
+                            return self.getContacts();
+                        }).then(function() {
+                            blockUiLoader.unblockUi();
+                            return apiContact;
+                        });
+                    }
+                } else {
+                    editingContact.set('address.isValidated', true);
+                    var op = editingContact.save();
+                    if (op) return op.then(function(contact) {
+                        apiContact = contact;
+                        self.endEditContact();
+                        return self.getContacts();
+                    }).then(function() {
+                        blockUiLoader.unblockUi();
+                        return apiContact;
+                    });
+                }
+            } else blockUiLoader.unblockUi();
         },
         deleteContact: function (id) {
             var self = this;
@@ -9343,10 +11632,10 @@ define('modules/models-faceting',['modules/jquery-mozu', 'underscore', "hyprlive
 define('shim!vendor/bootstrap/js/affix[jquery=jQuery]',['jquery'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: affix.js v3.2.0
+ * Bootstrap: affix.js v3.3.7
  * http://getbootstrap.com/javascript/#affix
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -9365,20 +11654,42 @@ define('shim!vendor/bootstrap/js/affix[jquery=jQuery]',['jquery'], function(jQue
       .on('click.bs.affix.data-api',  $.proxy(this.checkPositionWithEventLoop, this))
 
     this.$element     = $(element)
-    this.affixed      =
-    this.unpin        =
+    this.affixed      = null
+    this.unpin        = null
     this.pinnedOffset = null
 
     this.checkPosition()
   }
 
-  Affix.VERSION  = '3.2.0'
+  Affix.VERSION  = '3.3.7'
 
   Affix.RESET    = 'affix affix-top affix-bottom'
 
   Affix.DEFAULTS = {
     offset: 0,
     target: window
+  }
+
+  Affix.prototype.getState = function (scrollHeight, height, offsetTop, offsetBottom) {
+    var scrollTop    = this.$target.scrollTop()
+    var position     = this.$element.offset()
+    var targetHeight = this.$target.height()
+
+    if (offsetTop != null && this.affixed == 'top') return scrollTop < offsetTop ? 'top' : false
+
+    if (this.affixed == 'bottom') {
+      if (offsetTop != null) return (scrollTop + this.unpin <= position.top) ? false : 'bottom'
+      return (scrollTop + targetHeight <= scrollHeight - offsetBottom) ? false : 'bottom'
+    }
+
+    var initializing   = this.affixed == null
+    var colliderTop    = initializing ? scrollTop : position.top
+    var colliderHeight = initializing ? targetHeight : height
+
+    if (offsetTop != null && scrollTop <= offsetTop) return 'top'
+    if (offsetBottom != null && (colliderTop + colliderHeight >= scrollHeight - offsetBottom)) return 'bottom'
+
+    return false
   }
 
   Affix.prototype.getPinnedOffset = function () {
@@ -9396,42 +11707,40 @@ define('shim!vendor/bootstrap/js/affix[jquery=jQuery]',['jquery'], function(jQue
   Affix.prototype.checkPosition = function () {
     if (!this.$element.is(':visible')) return
 
-    var scrollHeight = $(document).height()
-    var scrollTop    = this.$target.scrollTop()
-    var position     = this.$element.offset()
+    var height       = this.$element.height()
     var offset       = this.options.offset
     var offsetTop    = offset.top
     var offsetBottom = offset.bottom
+    var scrollHeight = Math.max($(document).height(), $(document.body).height())
 
     if (typeof offset != 'object')         offsetBottom = offsetTop = offset
     if (typeof offsetTop == 'function')    offsetTop    = offset.top(this.$element)
     if (typeof offsetBottom == 'function') offsetBottom = offset.bottom(this.$element)
 
-    var affix = this.unpin   != null && (scrollTop + this.unpin <= position.top) ? false :
-                offsetBottom != null && (position.top + this.$element.height() >= scrollHeight - offsetBottom) ? 'bottom' :
-                offsetTop    != null && (scrollTop <= offsetTop) ? 'top' : false
+    var affix = this.getState(scrollHeight, height, offsetTop, offsetBottom)
 
-    if (this.affixed === affix) return
-    if (this.unpin != null) this.$element.css('top', '')
+    if (this.affixed != affix) {
+      if (this.unpin != null) this.$element.css('top', '')
 
-    var affixType = 'affix' + (affix ? '-' + affix : '')
-    var e         = $.Event(affixType + '.bs.affix')
+      var affixType = 'affix' + (affix ? '-' + affix : '')
+      var e         = $.Event(affixType + '.bs.affix')
 
-    this.$element.trigger(e)
+      this.$element.trigger(e)
 
-    if (e.isDefaultPrevented()) return
+      if (e.isDefaultPrevented()) return
 
-    this.affixed = affix
-    this.unpin = affix == 'bottom' ? this.getPinnedOffset() : null
+      this.affixed = affix
+      this.unpin = affix == 'bottom' ? this.getPinnedOffset() : null
 
-    this.$element
-      .removeClass(Affix.RESET)
-      .addClass(affixType)
-      .trigger($.Event(affixType.replace('affix', 'affixed')))
+      this.$element
+        .removeClass(Affix.RESET)
+        .addClass(affixType)
+        .trigger(affixType.replace('affix', 'affixed') + '.bs.affix')
+    }
 
     if (affix == 'bottom') {
       this.$element.offset({
-        top: scrollHeight - this.$element.height() - offsetBottom
+        top: scrollHeight - height - offsetBottom
       })
     }
   }
@@ -9476,8 +11785,8 @@ define('shim!vendor/bootstrap/js/affix[jquery=jQuery]',['jquery'], function(jQue
 
       data.offset = data.offset || {}
 
-      if (data.offsetBottom) data.offset.bottom = data.offsetBottom
-      if (data.offsetTop)    data.offset.top    = data.offsetTop
+      if (data.offsetBottom != null) data.offset.bottom = data.offsetBottom
+      if (data.offsetTop    != null) data.offset.top    = data.offsetTop
 
       Plugin.call($spy, data)
     })
@@ -9497,10 +11806,10 @@ return null;
 define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: scrollspy.js v3.2.0
+ * Bootstrap: scrollspy.js v3.3.7
  * http://getbootstrap.com/javascript/#scrollspy
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -9512,10 +11821,8 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
   // ==========================
 
   function ScrollSpy(element, options) {
-    var process  = $.proxy(this.process, this)
-
-    this.$body          = $('body')
-    this.$scrollElement = $(element).is('body') ? $(window) : $(element)
+    this.$body          = $(document.body)
+    this.$scrollElement = $(element).is(document.body) ? $(window) : $(element)
     this.options        = $.extend({}, ScrollSpy.DEFAULTS, options)
     this.selector       = (this.options.target || '') + ' .nav li > a'
     this.offsets        = []
@@ -9523,12 +11830,12 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
     this.activeTarget   = null
     this.scrollHeight   = 0
 
-    this.$scrollElement.on('scroll.bs.scrollspy', process)
+    this.$scrollElement.on('scroll.bs.scrollspy', $.proxy(this.process, this))
     this.refresh()
     this.process()
   }
 
-  ScrollSpy.VERSION  = '3.2.0'
+  ScrollSpy.VERSION  = '3.3.7'
 
   ScrollSpy.DEFAULTS = {
     offset: 10
@@ -9539,19 +11846,18 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
   }
 
   ScrollSpy.prototype.refresh = function () {
-    var offsetMethod = 'offset'
-    var offsetBase   = 0
+    var that          = this
+    var offsetMethod  = 'offset'
+    var offsetBase    = 0
+
+    this.offsets      = []
+    this.targets      = []
+    this.scrollHeight = this.getScrollHeight()
 
     if (!$.isWindow(this.$scrollElement[0])) {
       offsetMethod = 'position'
       offsetBase   = this.$scrollElement.scrollTop()
     }
-
-    this.offsets = []
-    this.targets = []
-    this.scrollHeight = this.getScrollHeight()
-
-    var self     = this
 
     this.$body
       .find(this.selector)
@@ -9567,8 +11873,8 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
       })
       .sort(function (a, b) { return a[0] - b[0] })
       .each(function () {
-        self.offsets.push(this[0])
-        self.targets.push(this[1])
+        that.offsets.push(this[0])
+        that.targets.push(this[1])
       })
   }
 
@@ -9589,14 +11895,15 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
       return activeTarget != (i = targets[targets.length - 1]) && this.activate(i)
     }
 
-    if (activeTarget && scrollTop <= offsets[0]) {
-      return activeTarget != (i = targets[0]) && this.activate(i)
+    if (activeTarget && scrollTop < offsets[0]) {
+      this.activeTarget = null
+      return this.clear()
     }
 
     for (i = offsets.length; i--;) {
       activeTarget != targets[i]
         && scrollTop >= offsets[i]
-        && (!offsets[i + 1] || scrollTop <= offsets[i + 1])
+        && (offsets[i + 1] === undefined || scrollTop < offsets[i + 1])
         && this.activate(targets[i])
     }
   }
@@ -9604,13 +11911,11 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
   ScrollSpy.prototype.activate = function (target) {
     this.activeTarget = target
 
-    $(this.selector)
-      .parentsUntil(this.options.target, '.active')
-      .removeClass('active')
+    this.clear()
 
     var selector = this.selector +
-        '[data-target="' + target + '"],' +
-        this.selector + '[href="' + target + '"]'
+      '[data-target="' + target + '"],' +
+      this.selector + '[href="' + target + '"]'
 
     var active = $(selector)
       .parents('li')
@@ -9623,6 +11928,12 @@ define('shim!vendor/bootstrap/js/scrollspy[jquery=jQuery]',['jquery'], function(
     }
 
     active.trigger('activate.bs.scrollspy')
+  }
+
+  ScrollSpy.prototype.clear = function () {
+    $(this.selector)
+      .parentsUntil(this.options.target, '.active')
+      .removeClass('active')
   }
 
 
@@ -9692,7 +12003,7 @@ define('modules/scroll-nav',['modules/jquery-mozu', 'hyprlive', 'underscore', 'm
                 }).affix({
                     offset: {
                         top: $this.offset().top - gutterWidth,
-                        bottom: 0
+                        bottom: $('.ml-global-footer').outerHeight(true)+ $('footer').outerHeight(true)+$('.mz-pagefooter-copyright').outerHeight(true)
                     }
                 });
                 $(window).on('resize', refreshFn);
@@ -11502,10 +13813,9 @@ return jQuery;
 //@ sourceURL=/vendor/typeahead.js/typeahead.bundle.js
 
 ;
-define('modules/search-autocomplete',['shim!vendor/typeahead.js/typeahead.bundle[modules/jquery-mozu=jQuery]>jQuery', 'hyprlive', 'modules/api',
-      'hyprlivecontext'], function($, Hypr, api,
-        HyprLiveContext) {
-    
+define('modules/search-autocomplete',['shim!vendor/typeahead.js/typeahead.bundle[modules/jquery-mozu=jQuery]>jQuery', 'hyprlive', 'modules/api','hyprlivecontext'],
+    function($, Hypr, api, HyprLiveContext) {
+
     // bundled typeahead saves a lot of space but exports bloodhound to the root object, let's lose it
     var Bloodhound = window.Bloodhound.noConflict();
 
@@ -11582,7 +13892,20 @@ define('modules/search-autocomplete',['shim!vendor/typeahead.js/typeahead.bundle
                             rateLimitWait: 400,
                             ajax: self.ajaxConfig
                         }
-                    })
+                    }),
+					categories: new Bloodhound({
+		                datumTokenizer: function(datum) {
+		                    return datum.suggestion.categories.split(self.nonWordRe);
+		                },
+		                queryTokenizer: Bloodhound.tokenizers.whitespace,
+		                remote: {
+		                    url: self.getApiUrl('categories'),
+		                    wildcard: self.eqs(),
+		                    filter: self.makeSuggestionGroupFilter("Categories"),
+		                    rateLimitWait: 100,
+		                    ajax: self.ajaxConfig
+		                }
+		            })
                 };
             },
 
@@ -11626,8 +13949,6 @@ define('modules/search-autocomplete',['shim!vendor/typeahead.js/typeahead.bundle
                         source: self.AutocompleteManager.datasets.terms.ttAdapter()
                     });
                 }
-
-                
             }
         };
     };
@@ -11648,9 +13969,9 @@ define('modules/search-autocomplete',['shim!vendor/typeahead.js/typeahead.bundle
             });
         });
     });
-    
     return Search;
 });
+
 /**
  * Abstract dispatcher for routed applications in storefront.
  * Register a callback that will be called with a parsed URL.
@@ -11793,35 +14114,226 @@ define('modules/get-partial-view',['modules/jquery-mozu', 'modules/api'], functi
     };
 
 });
+define('modules/color-swatches',[
+    'modules/jquery-mozu',
+    'hyprlivecontext',
+    'modules/block-ui'
+], function ($, HyprLiveContext, blockUiLoader) {
+
+    //Select color Swatch
+    var sitecontext = HyprLiveContext.locals.siteContext;
+    var cdn = sitecontext.cdnPrefix;
+    var siteID = cdn.substring(cdn.lastIndexOf('-') + 1);
+    var imagefilepath = cdn + '/cms/' + siteID + '/files';
+    var imageMaxWidth = HyprLiveContext.locals.themeSettings.productImageDirectoryMaxWidth;
+    var _mainImage = '';
+    
+    //using GET request CheckImage function checks whether an image exist or not
+    var checkImage = function(imagepath, callback) {
+        $.get(imagepath).done(function() {
+            callback(true); //return true if image exist
+        }).error(function() {
+            callback(false);
+        });
+    };
+
+    //Change color swatch
+    var Swatches = {
+        changeColorSwatch: function(_e) {
+            //show loading
+            blockUiLoader.globalLoader();
+            var _self = $(_e.currentTarget);
+            if (_self.hasClass("active") || _self.parents("#overview-tab").length > 0) {
+                blockUiLoader.unblockUi();
+                return;
+            } else {
+                this.setMainImage( _self );
+                _self.siblings().removeClass("active");
+                _self.addClass("active");
+                blockUiLoader.unblockUi();
+            }
+        },
+        onMouseEnter: function(_e) {
+            var _self = $(_e.currentTarget),
+                _productCode = _self.attr("data-product-code");
+                _mainImage = $(".mz-productlist-list li[data-mz-product='" + _productCode + "'] .mz-productlisting-image img").attr('src');
+
+            this.setMainImage( _self );
+        },
+        onMouseLeave: function(_e) {
+            var _selectedColorDom = $(_e.currentTarget).parent().find('li.active'),
+                colorCode = _selectedColorDom.data('mz-swatch-color'),
+                productCode = $(_e.currentTarget).attr("data-product-code");
+            if (typeof colorCode != 'undefined') {
+                this.setMainImage( _selectedColorDom );
+            } else if(typeof _mainImage != 'undefined'){
+                var _img = $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image img");
+                _img.attr("src", _mainImage);
+            }else{
+                $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image a").html('<span class="mz-productlisting-imageplaceholder img-responsive"><span class="mz-productlisting-imageplaceholdertext">[no image]</span></span>');
+            }
+        },
+        setMainImage: function( _dom ){
+            var colorCode = _dom.data('mz-swatch-color'),
+                productCode = _dom.attr("data-product-code"),
+                img = $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image img");
+             
+               var imagepath = imagefilepath + '/' + productCode + '_' + colorCode + '_v1.jpg';
+                checkImage(imagepath, function(response) {
+                    if (response) {
+                        if (!img.length) {
+                            var parentDiv = $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image");
+                            parentDiv.find(".mz-productlisting-imageplaceholder").parent("a").addClass("image-holder");
+                            parentDiv.find(".mz-productlisting-imageplaceholder").remove();
+                            parentDiv.find(".image-holder").html("<img>");
+                            img = $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .image-holder img");
+                            img.addClass("img-responsive");
+                        }
+                        img.attr("src", imagefilepath + '/' + productCode + '_' + colorCode + '_v1.jpg?maxWidth=' + imageMaxWidth);        
+                    }else if(typeof _mainImage === 'undefined'){
+                        $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image a").html('<span class="mz-productlisting-imageplaceholder img-responsive"><span class="mz-productlisting-imageplaceholdertext">[no image]</span></span>');
+                    }else if(response === false){
+                        $(".mz-productlist-list li[data-mz-product='" + productCode + "'] .mz-productlisting-image a").html('<span class="mz-productlisting-imageplaceholder img-responsive"><span class="mz-productlisting-imageplaceholdertext">[no image]</span></span>');
+                    }
+                });            
+        }
+    };
+    return Swatches;
+});
+define('modules/category/infinite-scroller',[
+    'modules/backbone-mozu',
+    'modules/jquery-mozu',
+    "hyprlive",
+    'underscore',
+    "hyprlivecontext",
+    "modules/api",
+    "modules/get-partial-view",
+    "modules/block-ui"
+], function(Backbone, $, Hypr, _, HyprLiveContext, api, getPartialView, blockUiLoader) {
+    var items = require.mozuData('facetedproducts').items;
+    var sitecontext = HyprLiveContext.locals.siteContext;
+    var cdn = sitecontext.cdnPrefix;
+    var isLoadMore = true;
+    var siteID = cdn.substring(cdn.lastIndexOf('-') + 1);
+    var imagefilepath = cdn + '/cms/' + siteID + '/files';
+    var startIndex = require.mozuData('facetedproducts').startIndex;
+    var pageSize = HyprLiveContext.locals.themeSettings.productInfinitySize;
+
+    var ProductListItemView = Backbone.MozuView.extend({
+        tagName: 'li',
+        className: 'mz-productlist-item col-xs-6 col-sm-4',
+        templateName: 'modules/product/product-listing',
+        initialize: function() {
+            var self = this;
+            self.listenTo(self.model, 'change', self.render);
+        },
+        render: function() {
+            Backbone.MozuView.prototype.render.apply(this);
+            this.$el.attr("data-mz-product", this.$el.find(".mz-productlisting").data("mz-product"));
+            return this;
+        }
+    });
+
+    var Model = Backbone.MozuModel.extend();
+
+    var ProductsListView = Backbone.MozuView.extend({
+        templateName: 'modules/category/infinity-scroll',
+        initialize: function() {
+            var self = this;
+            $(window).scroll(function() {
+                if ($(window).scrollTop() >= $(document).height() - $(window).height() - $('.ml-global-footer').height() - $('footer').height() - 200) {
+                    if ($(".view-all.selected").length) {
+                        $("#more-item-container").show();
+                        self.loadMoreProducts();
+                    } else {
+                        $("#more-item-container").hide();
+                    }
+                }
+            });
+        },
+        render: function() {
+            var me = this;
+            items = require.mozuData('facetedproducts').items;
+            me.model.attributes.products = items;
+            Backbone.MozuView.prototype.render.apply(this);
+            $('#more-product-list').empty();
+        },
+        addProduct: function(prod) {
+            var view = new ProductListItemView({ model: new Model(prod) });
+            var renderedView = view.render().el;
+            $('#more-product-list').append(renderedView);
+        },
+        loadMoreProducts: function() {
+            var me = this;
+            var totalProducts = require.mozuData('facetedproducts').totalCount;
+
+            if (totalProducts > startIndex && isLoadMore) {
+                isLoadMore = false;
+                $("#loaderIcon").show();
+                var url = window.location.pathname;
+                var search = window.location.search;
+                search += (search.indexOf('?') == -1) ? '?' : '&';
+                if (startIndex !== 0) {
+                    blockUiLoader.globalLoader();
+                    getPartialView(url + search + 'startIndex=' + startIndex, 'category-interior-json').then(function(response) {
+                        var products = JSON.parse(response.body);
+                        _.each(products.items, me.addProduct.bind(me));
+                        blockUiLoader.unblockUi();
+                        $("#loaderIcon").hide();
+                        isLoadMore = true;
+                        startIndex += pageSize;
+                    }, function(error) {
+                        $("#loaderIcon").hide();
+                        blockUiLoader.unblockUi();
+                        isLoadMore = true;
+                        console.log(error);
+                    });
+                } else {
+                    startIndex += pageSize;
+                }
+            }
+        }
+    });
+
+    return {
+        update: function() {
+            var productsListView = new ProductsListView({
+                model: new Model({ products: items }),
+                el: '#more-item-container'
+            });
+            startIndex = pageSize;
+            productsListView.render();
+        }
+    };
+});
 /**
  * Unidirectional dispatch-driven collection views, for your pleasure.
  */
-
-
 define('modules/views-collections',[
     'backbone',
+    'modules/jquery-mozu',
     'underscore',
     'modules/url-dispatcher',
     'modules/intent-emitter',
-    'modules/get-partial-view'
-], function(Backbone, _, UrlDispatcher, IntentEmitter, getPartialView) {
+    'modules/get-partial-view',
+    'modules/color-swatches',
+     'modules/block-ui',
+    'modules/category/infinite-scroller',
+    'modules/metrics'
+], function(Backbone, $ , _, UrlDispatcher, IntentEmitter, getPartialView,colorSwatch,blockUiLoader,InfiniteScroller, MetricsEngine) {
 
     function factory(conf) {
 
         var _$body = conf.$body;
         var _dispatcher = UrlDispatcher;
+        var _isColorClicked = false;
         var ROUTE_NOT_FOUND = 'ROUTE_NOT_FOUND';
-
-        function updateUi(response) {
-            var url = response.canonicalUrl;
-            _$body.html(response.body);
-            if (url) _dispatcher.replace(url);
-
-            if (window.myStoreView) {
-                window.myStoreView.init();
-            }
-
-            _$body.removeClass('mz-loading');
+        var _mainImage = '';
+        var footerPagingClicked=false;
+        // on page load get facet href and append facets
+        var path = getFacet();
+        if (path !== "") {
+            updateFacetFilter(path);
         }
 
         function showError(error) {
@@ -11831,20 +14343,53 @@ define('modules/views-collections',[
             _$body.find('[data-mz-messages]').text(error.message);
         }
 
-        function intentToUrl(e) {
+         function intentToUrl(e) {
+            if ($(".blockOverlay").length > 0) {
+                return;
+            }
+            //show loading
+            blockUiLoader.globalLoader();
+            var path = getFacet();
             var elm = e.target;
             var url;
+            var del_url;
             if (elm.tagName.toLowerCase() === "select") {
                 elm = elm.options[elm.selectedIndex];
             }
             url = elm.getAttribute('data-mz-url') || elm.getAttribute('href') || '';
             if (url && url[0] != "/") {
+                url = (url.substr(url.length - 3) === '%3a') ? url.substring(0, url.length - 3) : url;
                 var parser = document.createElement('a');
                 parser.href = url;
                 url = window.location.pathname + parser.search;
             }
             return url;
         }
+        //remove facets when clicked on cross
+        $('#page-content').on('click', '.remove-facet', (function(e) {
+            blockUiLoader.globalLoader();
+            var mzFacet = $(this).attr('data-mz-facet');
+            var mzFacetValue = $(this).attr('data-mz-facet-value');
+            var delFacet = mzFacet + ':' + mzFacetValue.replace(/\s/g, '+');
+            var delFacet1 = mzFacet + '%3a' + mzFacetValue.replace(/\s/g, '+');
+            //remove facet from url
+            var path = getFacet();
+            path = decodeURIComponent(path);
+            var url = path.replace(delFacet + ',', '');
+            url = url.replace(delFacet1 + ',', '');
+            url = url.indexOf(delFacet) >= 0 ? path.replace(delFacet, '') : url;
+            url = url.indexOf(delFacet1) >= 0 ? path.replace(delFacet1, '') : url;
+            url = (url === '?facetValueFilter=') ? window.location.pathname : url;
+            url = (url.substr(url.length - 1) === ':') ? url.substring(0, url.length - 1) : url;
+
+            var parser = document.createElement('a');
+            parser.href = url;
+            url = window.location.pathname + parser.search;
+            if (url && _dispatcher.send(url)) {
+                _$body.addClass('mz-loading');
+                e.preventDefault();
+            }
+        }));
 
         var navigationIntents = IntentEmitter(
             _$body,
@@ -11861,6 +14406,13 @@ define('modules/views-collections',[
             intentToUrl
         );
 
+        var toggleView = IntentEmitter(
+            _$body, [
+                'click [data-btn-view-toggle]'
+            ],
+            toggleProductView
+        );
+
         navigationIntents.on('data', function(url, e) {
             if (url && _dispatcher.send(url)) {
                 _$body.addClass('mz-loading');
@@ -11868,10 +14420,266 @@ define('modules/views-collections',[
             }
         });
 
+
+        //create facets and append them in list
+        function updateFacetFilter(path) {
+
+            if (path.indexOf("facetValueFilter") > -1) {
+                var pathArray = path.substring(1).split("&");
+                var facetValue = "";
+                for (var i = 0; i < pathArray.length; i++) {
+                    var currentElmnt = pathArray[i].split("=");
+                    if (currentElmnt[0] === "facetValueFilter") {
+                        facetValue = currentElmnt[1];
+                        break;
+                    }
+                }
+                if (facetValue !== "") {
+                    facetValue = decodeURIComponent(facetValue).split(",");
+                    var available_facets = "";
+                    for (var j = 0; j < facetValue.length; j++) {
+                        var facetKey = facetValue[j].split(":")[0];
+                        var facetVal = facetValue[j] !== "" ? facetValue[j].split(":")[1].replace(/\+/g, ' ') : "";
+                        if (facetVal === "") {
+                            continue;
+                        }
+                        if (facetVal.indexOf("&#38") != facetVal.indexOf("&#38;")) {
+                            facetVal = facetVal.replace(/\&#38/g, '&amp;');
+                        }
+                        var displayValue = facetVal;
+
+                        if (facetKey === 'price') {
+                            if (displayValue.indexOf("* TO")) {
+                                displayValue = displayValue.replace("* TO ", "");
+                                displayValue += " and under";
+                            } else if (displayValue.indexOf("TO *")) {
+                                displayValue = displayValue.replace(" TO *", "+");
+                            }
+                            displayValue = displayValue.replace("[", "$").replace("]", "").replace(/to/gi, "-");
+                        }
+                        var filterKeyFormat=facetKey.replace('~','-');
+
+                        if(filterKeyFormat==='' && facetVal===''){
+                            $('#filter-'+filterKeyFormat).find('.mz-clear-facet-section').addClass('hide');
+                        }else{
+                             $('#filter-'+filterKeyFormat).find('.mz-clear-facet-section').removeClass('hide');
+                        }
+                        if(facetKey === 'tenant~size'){
+                             displayValue=$('#'+facetVal).attr('data-mz-text-value');
+                        }
+                        available_facets += '<li><i class="fa fa-times-circle remove-facet" data-mz-facet="' + facetKey + '" data-mz-facet-value="' + facetValue[j].split(":")[1] + '" data-mz-purpose="remove" data-mz-action="clearFacet"></i> <u>' + displayValue + '</u></li>';
+                    }
+                    if (available_facets !== '') {
+                        var filterOptionList = $("#filterOptionList");
+                        filterOptionList.append(available_facets);
+                    }
+                    return true;
+                }
+            }
+        }
+        //get facets from the href
+        function getFacet() {
+            var path = window.location.search;
+            return path;
+        }
+         function updateUi(response) {
+            var url = response.canonicalUrl;
+            if (url && url.substr(url.length - 2) === '&&')
+                url = url.substring(0, url.length - 1);
+            _$body.html(response.body);
+              if (window.myStoreView) {
+                window.myStoreView.init();
+            }
+            if (url) _dispatcher.replace(url);
+            _$body.removeClass('mz-loading');
+            InfiniteScroller.update();
+            if(footerPagingClicked){
+                 $("html, body").animate({ scrollTop: 0 }, "1000");
+                 footerPagingClicked=false;
+            }
+            //add facet filter to list if any
+            var path = getFacet();
+            updateFacetFilter(path);
+            //check default view
+            if ($.cookie("currentView") === "listView") {
+                $("#listView").trigger("click");
+            } else {
+                $("#gridView").trigger("click");
+            }
+            blockUiLoader.unblockUi();
+        }
+         //Toggle View GRID/LIST
+        function toggleProductView(_e) {
+            var _self = $(_e.currentTarget);
+            var toggleButtons = $("button[data-btn-view-toggle]");
+            var toggleListView = $(".ml-list-view-toggle");
+            //check if already active
+            if (_self.hasClass("active")) {
+                return;
+            } else {
+                //check which view is enable
+                if (_self.attr("id") == "gridView" && !toggleListView.hasClass("grid-view")) {
+                    toggleListView.addClass("grid-view").removeClass("list-view");
+                    $.cookie("currentView", "gridView");
+                } else {
+                    toggleListView.addClass("list-view").removeClass("grid-view");
+                    $.cookie("currentView", "listView");
+                }
+            }
+            //make selected view icon active
+            toggleButtons.removeClass("active");
+            _self.addClass("active");
+        }
+         //Select color Swatch
+        var selectSwatch = IntentEmitter(
+            _$body, [
+                'click #product-list-ul [data-mz-swatch-color]',
+                'click #more-product-list [data-mz-swatch-color]',
+                'mouseenter #product-list-ul [data-mz-swatch-color]',
+                'mouseleave #product-list-ul [data-mz-swatch-color]'
+            ],
+            changeColorSwatch
+        );
+        //Change color swatch
+        function changeColorSwatch(_e) {
+            if(_e.type == 'mouseenter'){
+                colorSwatch.onMouseEnter(_e);
+            }
+            else if(_e.type == 'mouseleave'){
+                colorSwatch.onMouseLeave(_e);
+            }
+            else{
+                _isColorClicked = true;
+                colorSwatch.changeColorSwatch(_e);
+                _isColorClicked = false;
+            }
+        }
         _dispatcher.onChange(function(url) {
             getPartialView(url, conf.template).then(updateUi, showError);
         });
+        //Show more swatches
+        var showMoreSwatch = IntentEmitter(
+            _$body, [
+                'click .showMoreSwatches'
+            ],
+            showMoreColors
+        );
+        //show all colors
+        function showMoreColors(_e) {
+            var _self = $(_e.currentTarget);
+            var currentProduct = _self.parents(".ml-product-swatch");
+            _self.parent("li").hide();
+            currentProduct.find("li.mz-hide-color").removeClass("mz-hide-color");
+        }
+        //toggle filters
+        var toggleFilters = IntentEmitter(
+            _$body, [
+                'click [data-mz-filters-collapse]'
+            ],
+            toggleFiltersView
+        );
+        var footerPaging=IntentEmitter(
+            _$body, [
+                'click .mz-l-paginatedlist-footer a'
+            ],
+            footerPagingRender
+        );
+        function footerPagingRender(){
+           footerPagingClicked=true;
+        }
 
+        var clearFacet=IntentEmitter(
+            _$body, [
+                'click .mz-clear-facet-section'
+            ],
+            clearFacetSection
+        );
+
+        function clearFacetSection(_e){
+            blockUiLoader.globalLoader();
+            var _self = $(_e.currentTarget);
+            var facetVal = _self.attr("data-clear-text");
+            var path = getFacet();
+            path = decodeURIComponent(path);
+            var url= path.replace(new RegExp(facetVal+'\:(.*?)(,|&)', 'g'), '');
+            if(url[url.length -1]==','){
+                url = url.replace(new RegExp(',$', 'g'), '\&');
+
+            }
+            var parser = document.createElement('a');
+            parser.href = url;
+            url = window.location.pathname + parser.search;
+            if (url && _dispatcher.send(url)) {
+                _$body.addClass('mz-loading');
+                _e.preventDefault();
+            }
+        }
+        //Toggle filters
+        function toggleFiltersView(_e) {
+            var icon = $('#collapseIcon>i');
+            var elmtn = $('#filterOptions');
+            $(elmtn).toggle();
+
+            if ($(icon).hasClass("fa-plus")) {
+                $(icon).removeClass("fa-plus").addClass("fa-minus");
+            } else {
+                $(icon).addClass("fa-plus").removeClass("fa-minus");
+            }
+        }
+        //toggle filter
+        var toggleFilter = IntentEmitter(
+            _$body, [
+                'click [data-mz-filter-collapse]'
+            ],
+            toggleFilterView
+        );
+        //Toggle filter
+        function toggleFilterView(_e) {
+            var _self = $(_e.currentTarget);
+            var count = _self.attr("data-mz-filter-collapse");
+            var icon = $('#filterIcon' + count);
+            var elmtn = $('#filterList' + count);
+
+            $(".mz-facetingform-facet").removeClass("active");
+            $(elmtn).addClass("active");
+            $(".filter-icon").find("i.fa")
+                .removeClass("fa-minus")
+                .addClass("fa-plus");
+
+            $(icon).find("i.fa")
+                .removeClass("fa-plus")
+                .addClass("fa-minus");
+        }
+        //toggle filter
+        var backToTop = IntentEmitter(
+            _$body, [
+                "click .back-to-top"
+            ],
+            backToTopFn
+        );
+        function backToTopFn() {
+            $("html, body").animate({ scrollTop: 0 }, 500);
+        }
+        //Switch More
+        var switchMore = IntentEmitter(
+            _$body, [
+                "click .show-more"
+            ],
+            switchMoreFn
+        );
+        function switchMoreFn(e) {
+            var parentLi = $(e.currentTarget).parent("li.show-more-li");
+            if (parentLi.hasClass("show-less")) {
+                parentLi.find("a").text("More...");
+                parentLi.removeClass("show-less").parent("ul").find("li.mz-hide-text").addClass("hide");
+            } else {
+                parentLi.find("a").text("Less...");
+                parentLi.addClass("show-less").parent("ul").find("li.mz-hide-text").removeClass("hide");
+            }
+        }
+        if ($(".view-all.selected").length) {
+            InfiniteScroller.update();
+        }
     }
 
     return {
@@ -11879,6 +14687,7 @@ define('modules/views-collections',[
     };
 
 });
+
 /**
  * Can be used on any Backbone.MozuModel that has had the paging mixin in mixins-paging added to it.
  */
@@ -12013,3 +14822,36 @@ define('modules/views-productlists',['modules/jquery-mozu', 'underscore', 'modul
         FacetingPanel: FacetingPanel
     };
 });
+
+/*! lazysizes - v1.1.4-rc1 */
+!function(a,b){var c=b(a,a.document);a.lazySizes=c,"object"==typeof module&&module.exports?module.exports=c:"function"==typeof define&&define.amd&&define(c)}(window,function(a,b){if(b.getElementsByClassName){var c,d=b.documentElement,e=a.addEventListener,f=a.setTimeout,g=a.requestAnimationFrame||f,h=a.setImmediate||f,i=/^picture$/i,j=["load","error","lazyincluded","_lazyloaded"],k=function(a,b){var c=new RegExp("(\\s|^)"+b+"(\\s|$)");return a.className.match(c)&&c},l=function(a,b){k(a,b)||(a.className+=" "+b)},m=function(a,b){var c;(c=k(a,b))&&(a.className=a.className.replace(c," "))},n=function(a,b,c){var d=c?"addEventListener":"removeEventListener";c&&n(a,b),j.forEach(function(c){a[d](c,b)})},o=function(a,c,d,e,f){var g=b.createEvent("CustomEvent");return g.initCustomEvent(c,!e,!f,d||{}),a.dispatchEvent(g),g},p=function(b,d){var e;a.HTMLPictureElement||((e=a.picturefill||a.respimage||c.pf)?e({reevaluate:!0,elements:[b]}):d&&d.src&&(b.src=d.src))},q=function(a,b){return(getComputedStyle(a,null)||{})[b]},r=function(a,b,d){for(d=d||a.offsetWidth;d<c.minSize&&b&&!a._lazysizesWidth;)d=b.offsetWidth,b=b.parentNode;return d},s=function(b){var d,e=0,i=a.Date,j=function(){d=!1,e=i.now(),b()},k=function(){h(j)},l=function(){g(k)};return function(){if(!d){var a=c.throttle-(i.now()-e);d=!0,6>a&&(a=6),f(l,a)}}},t=function(){var h,j,r,t,v,w,x,y,z,A,B,C,D,E=/^img$/i,F=/^iframe$/i,G="onscroll"in a&&!/glebot/.test(navigator.userAgent),H=0,I=0,J=0,K=0,L=function(a){J--,a&&a.target&&n(a.target,L),(!a||0>J||!a.target)&&(J=0)},M=function(a,b){var c,d=a,e="hidden"!=q(a,"visibility");for(y-=b,B+=b,z-=b,A+=b;e&&(d=d.offsetParent);)e=(q(d,"opacity")||1)>0,e&&"visible"!=q(d,"overflow")&&(c=d.getBoundingClientRect(),e=A>c.left&&z<c.right&&B>c.top-1&&y<c.bottom+1);return e},N=function(){var a,b,d,e,f,g,i,k,l;if((v=c.loadMode)&&8>J&&(a=h.length)){for(b=0,K++,D>I&&1>J&&K>3&&v>2?(I=D,K=0):I=I!=C&&v>1&&K>2&&6>J?C:H;a>b;b++)if(h[b]&&!h[b]._lazyRace)if(G)if((k=h[b].getAttribute("data-expand"))&&(g=1*k)||(g=I),l!==g&&(w=innerWidth+g,x=innerHeight+g,i=-1*g,l=g),d=h[b].getBoundingClientRect(),(B=d.bottom)>=i&&(y=d.top)<=x&&(A=d.right)>=i&&(z=d.left)<=w&&(B||A||z||y)&&(r&&3>J&&!k&&(3>v||4>K)||M(h[b],g))){if(S(h[b],d.width),f=!0,J>9)break}else!f&&r&&!e&&3>J&&4>K&&v>2&&(j[0]||c.preloadAfterLoad)&&(j[0]||!k&&(B||A||z||y||"auto"!=h[b].getAttribute(c.sizesAttr)))&&(e=j[0]||h[b]);else S(h[b]);e&&!f&&S(e)}},O=s(N),P=function(a){l(a.target,c.loadedClass),m(a.target,c.loadingClass),n(a.target,P)},Q=function(a,b){try{a.contentWindow.location.replace(b)}catch(c){a.setAttribute("src",b)}},R=function(){var a,b=[],c=function(){for(;b.length;)b.shift()();a=!1};return function(d){b.push(d),a||(a=!0,g(c))}}(),S=function(a,b){var d,e,g,h,j,q,s,v,w,x,y,z=E.test(a.nodeName),A=z&&(a.getAttribute(c.sizesAttr)||a.getAttribute("sizes")),B="auto"==A;(!B&&r||!z||!a.src&&!a.srcset||a.complete||k(a,c.errorClass))&&(a._lazyRace=!0,J++,R(function(){if(a._lazyRace&&delete a._lazyRace,m(a,c.lazyClass),!(w=o(a,"lazybeforeunveil")).defaultPrevented){if(A&&(B?(u.updateElem(a,!0,b),l(a,c.autosizesClass)):a.setAttribute("sizes",A)),q=a.getAttribute(c.srcsetAttr),j=a.getAttribute(c.srcAttr),z&&(s=a.parentNode,v=s&&i.test(s.nodeName||"")),x=w.detail.firesLoad||"src"in a&&(q||j||v),w={target:a},x&&(n(a,L,!0),clearTimeout(t),t=f(L,2500),l(a,c.loadingClass),n(a,P,!0)),v)for(d=s.getElementsByTagName("source"),e=0,g=d.length;g>e;e++)(y=c.customMedia[d[e].getAttribute("data-media")||d[e].getAttribute("media")])&&d[e].setAttribute("media",y),h=d[e].getAttribute(c.srcsetAttr),h&&d[e].setAttribute("srcset",h);q?a.setAttribute("srcset",q):j&&(F.test(a.nodeName)?Q(a,j):a.setAttribute("src",j)),(q||v)&&p(a,{src:j})}(!x||a.complete)&&(x?L(w):J--,P(w))}))},T=function(){var a,b=function(){c.loadMode=3,O()};r=!0,K+=8,c.loadMode=3,e("scroll",function(){3==c.loadMode&&(c.loadMode=2),clearTimeout(a),a=f(b,99)},!0)};return{_:function(){h=b.getElementsByClassName(c.lazyClass),j=b.getElementsByClassName(c.lazyClass+" "+c.preloadClass),C=c.expand,D=Math.round(C*c.expFactor),e("scroll",O,!0),e("resize",O,!0),a.MutationObserver?new MutationObserver(O).observe(d,{childList:!0,subtree:!0,attributes:!0}):(d.addEventListener("DOMNodeInserted",O,!0),d.addEventListener("DOMAttrModified",O,!0),setInterval(O,999)),e("hashchange",O,!0),["focus","mouseover","click","load","transitionend","animationend","webkitAnimationEnd"].forEach(function(a){b.addEventListener(a,O,!0)}),/d$|^c/.test(b.readyState)?T():(e("load",T),b.addEventListener("DOMContentLoaded",O)),O()},checkElems:O,unveil:S}}(),u=function(){var a,d=function(a,b,c){var d,e,f,g,h=a.parentNode;if(h&&(c=r(a,h,c),g=o(a,"lazybeforesizes",{width:c,dataAttr:!!b}),!g.defaultPrevented&&(c=g.detail.width,c&&c!==a._lazysizesWidth))){if(a._lazysizesWidth=c,c+="px",a.setAttribute("sizes",c),i.test(h.nodeName||""))for(d=h.getElementsByTagName("source"),e=0,f=d.length;f>e;e++)d[e].setAttribute("sizes",c);g.detail.dataAttr||p(a,g.detail)}},f=function(){var b,c=a.length;if(c)for(b=0;c>b;b++)d(a[b])},g=s(f);return{_:function(){a=b.getElementsByClassName(c.autosizesClass),e("resize",g)},checkElems:g,updateElem:d}}(),v=function(){v.i||(v.i=!0,u._(),t._())};return function(){var b,d={lazyClass:"lazyload",loadedClass:"lazyloaded",loadingClass:"lazyloading",preloadClass:"lazypreload",errorClass:"lazyerror",autosizesClass:"lazyautosizes",srcAttr:"data-src",srcsetAttr:"data-srcset",sizesAttr:"data-sizes",minSize:40,customMedia:{},init:!0,expFactor:2,expand:359,loadMode:2,throttle:125};c=a.lazySizesConfig||a.lazysizesConfig||{};for(b in d)b in c||(c[b]=d[b]);a.lazySizesConfig=c,f(function(){c.init&&v()})}(),{cfg:c,autoSizer:u,loader:t,init:v,uP:p,aC:l,rC:m,hC:k,fire:o,gW:r}}});
+
+/*! lazysizes - v1.1.4-rc1 */
+!function(a,b,c){function d(a,b){var c,d,e,f;d=a.parentNode,f={isPicture:!(!d||!m.test(d.nodeName||""))},e=function(b,c){var d=a.getAttribute("data-"+b);if(null!=d){if("true"==d)d=!0;else if("false"==d)d=!1;else if(l.test(d))d=parseFloat(d);else if("function"==typeof j[b])d=j[b](a,d);else if(p.test(d))try{d=JSON.parse(d)}catch(e){}f[b]=d}else b in j&&"function"!=typeof j[b]?f[b]=j[b]:c&&"function"==typeof j[b]&&(f[b]=j[b](a,d))};for(c in j)e(c);return b.replace(o,function(a,b){b in f||e(b,!0)}),f}function e(a,b){var c=[],d=function(a,c){return k[typeof b[c]]?b[c]:a};return c.srcset=[],b.absUrl&&(r.setAttribute("href",a),a=r.href),a=((b.prefix||"")+a+(b.postfix||"")).replace(o,d),b.widths.forEach(function(d){var e={u:a.replace(n,b.widthmap[d]||d),w:d};c.push(e),c.srcset.push(e.c=e.u+" "+d+"w")}),c}function f(a,b,c){a&&(a=e(a,b),a.isPicture=b.isPicture,t&&"IMG"==c.nodeName.toUpperCase()?c.removeAttribute(i.srcsetAttr):c.setAttribute(i.srcsetAttr,a.srcset.join(", ")),Object.defineProperty(c,"_lazyrias",{value:a,writable:!0}))}function g(a,b){var c=d(a,b);return j.modifyOptions.call(a,{target:a,details:c,detail:c}),lazySizes.fire(a,"lazyriasmodifyoptions",c),c}function h(a){return a.getAttribute(a.getAttribute("data-srcattr")||j.srcAttr)||a.getAttribute(i.srcsetAttr)||a.getAttribute(i.srcAttr)||a.getAttribute("data-pfsrcset")||""}if(b.addEventListener){var i,j,k={string:1,number:1},l=/^\-*\+*\d+\.*\d*$/,m=/^picture$/i,n=/\s*\{\s*width\s*\}\s*/i,o=/\s*\{\s*([a-z0-9]+)\s*\}\s*/gi,p=/^\[.*\]|\{.*\}$/,q=/^(?:auto|\d+(px)?)$/,r=b.createElement("a"),s=b.createElement("img"),t="srcset"in s&&!("sizes"in s);!function(){var b,c=function(){},d={prefix:"",postfix:"",srcAttr:"data-src",absUrl:!1,modifyOptions:c,widthmap:{}};i=a.lazySizes&&lazySizes.cfg||a.lazySizesConfig,i||(i={},a.lazySizesConfig=i),i.supportsType||(i.supportsType=function(a){return!a}),i.rias||(i.rias={}),j=i.rias,"widths"in j||(j.widths=[],function(a){for(var b,c=0;!b||3e3>b;)c+=5,c>30&&(c+=1),b=36*c,a.push(b)}(j.widths));for(b in d)b in j||(j[b]=d[b])}(),addEventListener("lazybeforeunveil",function(a){var b,c,d,e,k,l,m,o,p,r,s,t,v;if(b=a.target,!a.defaultPrevented&&!j.disabled&&(p=b.getAttribute(i.sizesAttr)||b.getAttribute("sizes"))&&q.test(p)){if(c=h(b),d=g(b,c),s=n.test(d.prefix)||n.test(d.postfix),d.isPicture&&(e=b.parentNode))for(k=e.getElementsByTagName("source"),l=0,m=k.length;m>l;l++)(s||n.test(o=h(k[l])))&&(f(o,d,k[l]),t=!0);s||n.test(c)?(f(c,d,b),t=!0):t&&(v=[],v.srcset=[],v.isPicture=!0,Object.defineProperty(b,"_lazyrias",{value:v,writable:!0})),t&&"auto"!=p&&(r={width:parseInt(p,10)},u({target:b,detail:r,details:r}))}});var u=function(){var c=function(a,b){return a.w-b.w},d=function(a){var b,c,d=a.length,e=a[d-1],f=0;for(f;d>f;f++)if(e=a[f],e.d=e.w/a.w,e.d>=a.d){!e.cached&&(b=a[f-1])&&b.d>a.d-.13*Math.pow(a.d,2.2)&&(c=Math.pow(b.d-.6,1.6),b.cached&&(b.d+=.15*c),b.d+(e.d-a.d)*c>a.d&&(e=b));break}return e},e=function(a,b){var c;return!a._lazyrias&&lazySizes.pWS&&(c=lazySizes.pWS(a.getAttribute(i.srcsetAttr||""))).length&&(Object.defineProperty(a,"_lazyrias",{value:c,writable:!0}),b&&a.parentNode&&(c.isPicture="PICTURE"==a.parentNode.nodeName.toUpperCase())),a._lazyrias},f=function(b){var c=a.devicePixelRatio||1,d=lazySizes.getX&&lazySizes.getX(b);return Math.min(d||c,2.5,c)},g=function(b,g){var h,i,j,k,l,m;if(l=b._lazyrias,l.isPicture&&a.matchMedia)for(i=0,h=b.parentNode.getElementsByTagName("source"),j=h.length;j>i;i++)if(e(h[i])&&!h[i].getAttribute("type")&&(!(k=h[i].getAttribute("media"))||(matchMedia(k)||{}).matches)){l=h[i]._lazyrias;break}return(!l.w||l.w<g)&&(l.w=g,l.d=f(b),m=d(l.sort(c))),m},h=function(c){var d,f=c.target;return a.HTMLPictureElement||a.respimage||a.picturefill||lazySizesConfig.pf?void b.removeEventListener("lazybeforesizes",h):void(("_lazyrias"in f||c.detail.dataAttr&&e(f,!0))&&(d=g(f,c.detail.width),d&&d.u&&f._lazyrias.cur!=d.u&&(f._lazyrias.cur=d.u,d.cached=!0,f.setAttribute(i.srcAttr,d.u),f.setAttribute("src",d.u))))};return b.addEventListener("lazybeforesizes",h),h}()}}(window,document);
+
+/*! lazysizes - v1.1.4-rc1 */
+!function(a,b,c){if(a.addEventListener){var d,e=/^picture$/i,f=b.documentElement,g=function(){var a,b=/(([^,\s].[^\s]+)\s+(\d+)(w|h)(\s+(\d+)(w|h))?)/g,c=function(b,c,d,e,f,g,h,i){a.push({c:c,u:d,w:1*("w"==i?h:e)})};return function(d){return a=[],d.replace(b,c),a}}(),h=function(){var a=function(a,b){return a.w-b.w},b=function(b,c){var d={srcset:b.getAttribute(lazySizes.cfg.srcsetAttr)||""},e=g(d.srcset);return Object.defineProperty(b,c,{value:d,writable:!0}),d.cands=e,d.index=0,d.dirty=!1,e[0]&&e[0].w?(e.sort(a),d.cSrcset=[e[d.index].c]):(d.cSrcset=d.srcset?[d.srcset]:[],d.cands=[]),d};return function(a,c){var d,f,g,h;if(!a[c]&&(h=a.parentNode||{},a[c]=b(a,c),a[c].isImg=!0,e.test(h.nodeName||"")))for(a[c].picture=!0,d=h.getElementsByTagName("source"),f=0,g=d.length;g>f;f++)b(d[f],c).isImg=!1;return a[c]}}(),i={_lazyOptimumx:function(){var a=function(a,b,c){var d,e;return a&&a.w?a.w>c?!1:(d=1-a.w/c,e=b/c-1,0>e-d):!0};return function(b,c){var d,e;for(d=b.index+1;d<b.cands.length&&(e=b.cands[d],e.w<=c||a(b.cands[d-1],e.w,c));d++)b.cSrcset.push(e.c),b.index=d}}()},j=function(){var a=function(a,b,c,d){var e,f=a[d];f&&(e=f.index,i[d](f,b),f.dirty&&e==f.index||(f.cSrcset.join(", "),a.setAttribute(c,f.cSrcset.join(", ")),f.dirty=!0))};return function(b,c,d,e){var f,g,h,i,j=b[e];if(j.width=c,j.picture&&(g=b.parentNode))for(f=g.getElementsByTagName("source"),i=0,h=f.length;h>i;i++)a(f[i],c,d,e);a(b,c,d,e)}}(),k=function(a){var b=a.getAttribute("data-optimumx")||a.getAttribute("data-maxdpr");return b&&(b="auto"==b?d.getOptimumX(a):parseFloat(b,10)),b},l=function(){a.lazySizes&&!a.lazySizes.getOptimumX&&(lazySizes.getX=k,lazySizes.pWS=g,f.removeEventListener("lazybeforeunveil",l))};f.addEventListener("lazybeforeunveil",l),setTimeout(l),d=a.lazySizes&&lazySizes.cfg||a.lazySizesConfig,d||(d={},a.lazySizesConfig=d),"function"!=typeof d.getOptimumX&&(d.getOptimumX=function(){var b=a.devicePixelRatio||1;return b>2.4?b*=.7:b>1.9&&(b*=.85),Math.min(Math.round(100*b)/100,2.2)}),a.devicePixelRatio&&(addEventListener("lazybeforesizes",function(a){var b,c,d,e;a.defaultPrevented||!(b=k(a.target))||b>=devicePixelRatio||(c=h(a.target,"_lazyOptimumx"),d=a.detail.width*b,d&&(c.width||0)<d&&(e=a.detail.dataAttr?lazySizes.cfg.srcsetAttr:"srcset",j(a.target,d,e,"_lazyOptimumx")))}),addEventListener("lazybeforeunveil",function(a){a.target._lazyOptimumx&&(a.target._lazyOptimumx=null)}))}}(window,document);
+
+
+/*! lazysizes - v1.1.5 */
+!function(a,b){function c(a,c){if(!e[a]){var d=b.createElement(c?"link":"script"),f=b.getElementsByTagName("script")[0];c?(d.rel="stylesheet",d.href=a):d.src=a,e[a]=!0,e[d.src||d.href]=!0,f.parentNode.insertBefore(d,f)}}var d,e={};b.addEventListener&&(d=function(a,c){var d=b.createElement("img");d.onload=function(){d.onload=null,d.onerror=null,d=null,c()},d.onerror=d.onload,d.src=a,d&&d.complete&&d.onload&&d.onload()},addEventListener("lazybeforeunveil",function(b){var e,f,g,h;b.defaultPrevented||("none"==b.target.preload&&(b.target.preload="auto"),e=b.target.getAttribute("data-link"),e&&c(e,!0),e=b.target.getAttribute("data-script"),e&&c(e),e=b.target.getAttribute("data-require"),e&&a.require&&require([e]),g=b.target.getAttribute("data-bg"),g&&(b.detail.firesLoad=!0,f=function(){b.target.style.backgroundImage="url("+g+")",b.detail.firesLoad=!1,lazySizes.fire(b.target,"_lazyloaded",{},!0,!0)},d(g,f)),h=b.target.getAttribute("data-poster"),h&&(b.detail.firesLoad=!0,f=function(){b.target.poster=h,b.detail.firesLoad=!1,lazySizes.fire(b.target,"_lazyloaded",{},!0,!0)},d(h,f)))},!1))}(window,document);
+
+
+/*! lazysizes - v1.1.5 */
+!function(a,b,c){var d,e=a.lazySizes&&lazySizes.cfg||a.lazySizesConfig;e||(e={},a.lazySizesConfig=e),e.supportsType||(e.supportsType=function(a){return!a}),a.picturefill||a.respimage||e.pf||(e.pf=function(b){var c,e;if(!a.picturefill&&!a.respimage)for(c=0,e=b.elements.length;e>c;c++)d(b.elements[c])},d=function(){var c=function(a,b){return a.w-b.w},f=/^\s*\d+px\s*$/,g=function(a){var b,c,d=a.length,e=a[d-1],f=0;for(f;d>f;f++)if(e=a[f],e.d=e.w/a.w,e.d>=a.d){!e.cached&&(b=a[f-1])&&b.d>a.d-.13*Math.pow(a.d,2.2)&&(c=Math.pow(b.d-.6,1.6),b.cached&&(b.d+=.15*c),b.d+(e.d-a.d)*c>a.d&&(e=b));break}return e},h=function(){var a,b=/(([^,\s].[^\s]+)\s+(\d+)w)/g,c=/\s+\d+h/g,d=/\s/,e=function(b,c,d,e){a.push({c:c,u:d,w:1*e})};return function(f){return a=[],f=f.trim(),f.replace(c,"").replace(b,e),a.length||!f||d.test(f)||a.push({c:f,u:f,w:99}),a}}(),i=function(){i.init||(i.init=!0,addEventListener("resize",function(){var a,c=b.getElementsByClassName("lazymatchmedia"),e=function(){var a,b;for(a=0,b=c.length;b>a;a++)d(c[a])};return function(){clearTimeout(a),a=setTimeout(e,66)}}()))},j=function(b,c){var d,f=b.getAttribute("srcset")||b.getAttribute(e.srcsetAttr);!f&&c&&(f=b._lazypolyfill?b._lazypolyfill._set:b.getAttribute("src")||b.getAttribute(e.srcAttr)),b._lazypolyfill&&b._lazypolyfill._set==f||(d=h(f||""),c&&b.parentNode&&(d.isPicture="PICTURE"==b.parentNode.nodeName.toUpperCase(),d.isPicture&&"auto"!=b.getAttribute(e.sizesAttr)&&(a.matchMedia||a.Modernizr&&Modernizr.mq)&&(lazySizes.aC(b,"lazymatchmedia"),i())),d._set=f,Object.defineProperty(b,"_lazypolyfill",{value:d,writable:!0}))},k=function(b){var c=a.devicePixelRatio||1,d=lazySizes.getX&&lazySizes.getX(b);return Math.min(d||c,2.5,c)},l=function(b){return a.matchMedia?(l=function(a){return!a||(matchMedia(a)||{}).matches})(b):a.Modernizr&&Modernizr.mq?!b||Modernizr.mq(b):!b},m=function(a){var b,d,h,i,m,n,o;if(i=a,j(i,!0),m=i._lazypolyfill,m.isPicture)for(d=0,b=a.parentNode.getElementsByTagName("source"),h=b.length;h>d;d++)if(e.supportsType(b[d].getAttribute("type"),a)&&l(b[d].getAttribute("media"))){i=b[d],j(i),m=i._lazypolyfill;break}return m.length>1?(o=i.getAttribute("sizes")||"",o=f.test(o)&&parseInt(o,10)||lazySizes.gW(a,a.parentNode),m.d=k(a),(!m.w||m.w<o)&&(m.w=o,n=g(m.sort(c)))):n=m[0],n},n=function(a){var b=m(a);b&&b.u&&a._lazypolyfill.cur!=b.u&&(a._lazypolyfill.cur=b.u,b.cached=!0,a.setAttribute(e.srcAttr,b.u),a.setAttribute("src",b.u))};return n.parse=h,n}(),a.HTMLPictureElement||e.loadedClass&&e.loadingClass&&!function(){var a=[];['img[sizes$="px"][srcset].',"picture > img:not([srcset])."].forEach(function(b){a.push(b+e.loadedClass),a.push(b+e.loadingClass)}),e.pf({elements:b.querySelectorAll(a.join(", "))})}())}(window,document),function(a){var b,c=a.createElement("img");"srcset"in c&&!("sizes"in c)&&(b=/^picture$/i,a.addEventListener("lazybeforeunveil",function(c){var d,e,f,g,h,i,j;!c.defaultPrevented&&!lazySizesConfig.noIOSFix&&(d=c.target)&&(f=d.getAttribute(lazySizesConfig.srcsetAttr))&&(e=d.parentNode)&&((h=b.test(e.nodeName||""))||(g=d.getAttribute("sizes")||d.getAttribute(lazySizesConfig.sizesAttr)))&&(i=h?e:a.createElement("picture"),d._lazyImgSrc||Object.defineProperty(d,"_lazyImgSrc",{value:a.createElement("source"),writable:!0}),j=d._lazyImgSrc,g&&j.setAttribute("sizes",g),j.setAttribute(lazySizesConfig.srcsetAttr,f),d.setAttribute("data-pfsrcset",f),d.removeAttribute(lazySizesConfig.srcsetAttr),h||(e.insertBefore(i,d),i.appendChild(d)),i.insertBefore(j,d))}))}(document);
+
+
+/*! lazysizes - v1.1.5 */
+!function(a,b){if(a.addEventListener){var c=/\s+(\d+)(w|h)\s+(\d+)(w|h)/,d=/^picture$/i,e={getFit:function(a){var b={fit:a.getAttribute("data-parent-fit")};return b.fit?(b.parent=a.parentNode,b.parent&&d.test(b.parent.nodeName||"")&&(b.parent=b.parent.parentNode)):b.fit=(getComputedStyle(a)||{getPropertyValue:function(){}}).getPropertyValue("object-fit"),b},getImageRatio:function(b){var e,f,g,h={},i=b.parentNode,j=i&&d.test(i.nodeName||"")?i.querySelectorAll("source, img"):[b];for(e=0;e<j.length;e++)if(b=j[e],f=b.getAttribute(lazySizesConfig.srcsetAttr)||b.getAttribute("srcset")||b.getAttribute("data-pfsrcset")||b.getAttribute("data-risrcset")||"",g=b.getAttribute("media"),g=lazySizesConfig.customMedia[b.getAttribute("data-media")||g]||g,f&&(!g||(a.matchMedia&&matchMedia(g)||{}).matches)){f.match(c)&&("w"==RegExp.$2?(h.w=RegExp.$1,h.h=RegExp.$3):(h.w=RegExp.$3,h.h=RegExp.$1));break}return h.w/h.h},calculateSize:function(a,b){var c,d,e,f,g=this.getFit(a),h=g.fit,i=g.parent;return"width"==h||("contain"==h||"cover"==h)&&(e=this.getImageRatio(a))?(i?b=i.offsetWidth:i=a,f=b,"width"==h?f=b:(d=i.offsetHeight,d>40&&(c=b/d)&&("cover"==h&&e>c||"contain"==h&&c>e)&&(f=b*(e/c))),f):b}},f=function(){a.lazySizes&&(lazySizes.parentFit||(lazySizes.parentFit=e),a.removeEventListener("lazybeforeunveil",f,!0))};a.addEventListener("lazybeforeunveil",f,!0),b.addEventListener("lazybeforesizes",function(a){a.defaultPrevented||(a.detail.width=e.calculateSize(a.target,a.detail.width))}),setTimeout(f)}}(window,document);
+
+
+/*! lazysizes - v1.1.5 */
+!function(){if(window.addEventListener){var a=/\s*\|\s+|\s+\|\s*/g,b=/^(.+?)(?:\s+\[\s*(.+?)\s*\])?$/,c={contain:1,cover:1},d=function(a){var b=lazySizes.gW(a,a.parentNode);return(!a._lazysizesWidth||b>a._lazysizesWidth)&&(a._lazysizesWidth=b),a._lazysizesWidth},e=function(d,e,f){var g=document.createElement("picture"),h=e.getAttribute(lazySizesConfig.sizesAttr),i=e.getAttribute("data-optimumx"),j=(getComputedStyle(e)||{getPropertyValue:function(){}}).getPropertyValue("background-size");!c[j]||"auto"!=h&&h||(f.setAttribute("data-parent-fit",j),h="auto"),e._lazybgset&&e._lazybgset.parentNode==e&&e.removeChild(e._lazybgset),Object.defineProperty(f,"_lazybgset",{value:e,writable:!0}),Object.defineProperty(e,"_lazybgset",{value:g,writable:!0}),d=d.split(a),g.style.display="none",f.className=lazySizesConfig.lazyClass,1!=d.length||h||(h="auto"),d.forEach(function(a){var c=document.createElement("source");h&&"auto"!=h&&c.setAttribute("sizes",h),a.match(b)&&(c.setAttribute(lazySizesConfig.srcsetAttr,RegExp.$1),RegExp.$2&&c.setAttribute("media",lazySizesConfig.customMedia[RegExp.$2]||RegExp.$2)),g.appendChild(c)}),h&&(f.setAttribute(lazySizesConfig.sizesAttr,h),e.removeAttribute(lazySizesConfig.sizesAttr),e.removeAttribute("sizes")),i&&f.setAttribute("data-optimumx",i),g.appendChild(f),e.appendChild(g)},f=function(a){if(a.target._lazybgset){var b=a.target,c=b._lazybgset,d=b.currentSrc||b.src;d&&(c.style.backgroundImage="url("+d+")"),b._lazybgsetLoading&&(lazySizes.fire(c,"_lazyloaded",{},!1,!0),delete b._lazybgsetLoading)}};addEventListener("lazybeforeunveil",function(a){var b,c,d;!a.defaultPrevented&&(b=a.target.getAttribute("data-bgset"))&&(d=a.target,c=document.createElement("img"),c._lazybgsetLoading=!0,a.detail.firesLoad=!0,e(b,d,c),lazySizes.loader.unveil(c),lazySizes.fire(c,"_lazyloaded",{},!0,!0),setTimeout(function(){c.complete&&f({target:c})}))}),document.addEventListener("load",f,!0),document.documentElement.addEventListener("lazybeforesizes",function(a){!a.defaultPrevented&&a.target._lazybgset&&(a.detail.width=d(a.target._lazybgset))})}}();
+
+
+/*! lazysizes - v1.1.5 */
+!function(a,b){function c(){this.ratioElems=b.getElementsByClassName("lazyaspectratio"),this._setupEvents(),this.processImages()}if(a.addEventListener){var d,e,f,g=Array.prototype.forEach,h=/^picture$/i,i="data-aspectratio",j="img["+i+"]",k=function(b){return a.matchMedia?(k=function(a){return!a||(matchMedia(a)||{}).matches})(b):a.Modernizr&&Modernizr.mq?!b||Modernizr.mq(b):!b},l=function(b,c){f?f(b).addClass(c):a.lazySizes?lazySizes.aC(b,c):b.classList.add(c)},m=function(b,c){f?f(b).removeClass(c):a.lazySizes?lazySizes.rC(b,c):b.classList.remove(c)};c.prototype={_setupEvents:function(){var a=this,c=function(b){b.naturalWidth<36?a.addAspectRatio(b,!0):a.removeAspectRatio(b,!0)},d=function(){a.processImages()};b.addEventListener("load",function(a){a.target.getAttribute&&a.target.getAttribute(i)&&c(a.target)},!0),addEventListener("resize",function(){var b,d=function(){g.call(a.ratioElems,c)};return function(){clearTimeout(b),b=setTimeout(d,99)}}()),b.addEventListener("DOMContentLoaded",d),addEventListener("load",d)},processImages:function(a){var c,d;a||(a=b),c="length"in a&&!a.nodeName?a:a.querySelectorAll(j);for(d=0;d<c.length;d++)c[d].naturalWidth>36?this.removeAspectRatio(c[d]):this.addAspectRatio(c[d])},getSelectedRatio:function(b){var c,d,e,f,g,j=b.parentNode;if(j&&h.test(j.nodeName||""))for(e=j.getElementsByTagName("source"),c=0,d=e.length;d>c;c++)if(f=e[c].getAttribute("data-media")||e[c].getAttribute("media"),a.lazySizesConfig&&lazySizesConfig.customMedia[f]&&(f=lazySizesConfig.customMedia[f]),k(f)){g=e[c].getAttribute(i);break}return g||b.getAttribute(i)||""},parseRatio:function(){var a=/^\s*([+\d\.]+)(\s*[\/x]\s*([+\d\.]+))?\s*$/,b={};return function(c){return!b[c]&&c.match(a)&&(RegExp.$3?b[c]=RegExp.$1/RegExp.$3:b[c]=1*RegExp.$1),b[c]}}(),addAspectRatio:function(b,c){var d,e=b.offsetWidth,f=b.offsetHeight;return c||l(b,"lazyaspectratio"),36>e&&0>=f?void((e||f&&a.console)&&console.log("Define width or height of image, so we can calculate the other dimension")):(d=this.getSelectedRatio(b),d=this.parseRatio(d),void(d&&(e?b.style.height=e/d+"px":b.style.width=f*d+"px")))},removeAspectRatio:function(a){m(a,"lazyaspectratio"),a.style.height="",a.style.width="",a.removeAttribute(i)}},e=function(){f=a.jQuery||a.Zepto||a.shoestring||a.$,f&&f.fn&&!f.fn.imageRatio&&f.fn.filter&&f.fn.add&&f.fn.find?f.fn.imageRatio=function(){return d.processImages(this.find(j).add(this.filter(j))),this}:f=!1},e(),setTimeout(e),d=new c,a.imageRatio=d,"object"==typeof module&&module.exports?module.exports=d:"function"==typeof define&&define.amd&&define(d)}}(window,document);
+
+/*! lazysizes - v1.2.3-rc1 */
+!function(a,b){if(a.addEventListener){var c=/\s+(\d+)(w|h)\s+(\d+)(w|h)/,d=/^picture$/i,e={getFit:function(a){var b={fit:a.getAttribute("data-parent-fit")};return b.fit?(b.parent=a.parentNode,b.parent&&d.test(b.parent.nodeName||"")&&(b.parent=b.parent.parentNode)):b.fit=(getComputedStyle(a)||{getPropertyValue:function(){}}).getPropertyValue("object-fit"),b},getImageRatio:function(b){var e,f,g,h={},i=b.parentNode,j=i&&d.test(i.nodeName||"")?i.querySelectorAll("source, img"):[b];for(e=0;e<j.length;e++)if(b=j[e],f=b.getAttribute(lazySizesConfig.srcsetAttr)||b.getAttribute("srcset")||b.getAttribute("data-pfsrcset")||b.getAttribute("data-risrcset")||"",g=b.getAttribute("media"),g=lazySizesConfig.customMedia[b.getAttribute("data-media")||g]||g,f&&(!g||(a.matchMedia&&matchMedia(g)||{}).matches)){f.match(c)&&("w"==RegExp.$2?(h.w=RegExp.$1,h.h=RegExp.$3):(h.w=RegExp.$3,h.h=RegExp.$1));break}return h.w/h.h},calculateSize:function(a,b){var c,d,e,f,g=this.getFit(a),h=g.fit,i=g.parent;return"width"==h||("contain"==h||"cover"==h)&&(e=this.getImageRatio(a))?(i?b=i.offsetWidth:i=a,f=b,"width"==h?f=b:(d=i.offsetHeight,d>40&&(c=b/d)&&("cover"==h&&e>c||"contain"==h&&c>e)&&(f=b*(e/c))),f):b}},f=function(){a.lazySizes&&(lazySizes.parentFit||(lazySizes.parentFit=e),a.removeEventListener("lazybeforeunveil",f,!0))};a.addEventListener("lazybeforeunveil",f,!0),b.addEventListener("lazybeforesizes",function(a){a.defaultPrevented||(a.detail.width=e.calculateSize(a.target,a.detail.width))}),setTimeout(f)}}(window,document);
+define("vendor/jquery/lazysizes-custom.min", function(){});

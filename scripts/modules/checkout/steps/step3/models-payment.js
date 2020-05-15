@@ -28,7 +28,9 @@ define([
                 savedPaymentMethodId: {
                     fn: "validateSavedPaymentMethodId"
                 },
-
+                "contactId": {
+                    fn: "validateBillingAddress"
+                },
                 'billingContact.email': {
                     pattern: 'email',
                     msg: Hypr.getLabel('emailMissing')
@@ -43,6 +45,11 @@ define([
                 card: PaymentMethods.CreditCardWithCVV,
                 check: PaymentMethods.Check,
                 purchaseOrder: PaymentMethods.PurchaseOrder
+            },
+            validateBillingAddress: function () {
+                var isValid = this.selectedBillingDestination();
+                if (!isValid && $('[data-mz-value="contactId"]:visible').length)
+                    return Hypr.getLabel('billingAddressRequired');
             },
             validatePaymentType: function(value, attr) {
                 var order = this.getOrder();
@@ -1118,6 +1125,7 @@ define([
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -1130,6 +1138,7 @@ define([
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 

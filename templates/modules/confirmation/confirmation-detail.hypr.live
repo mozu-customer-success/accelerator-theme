@@ -1,9 +1,11 @@
 <div class="mz-l-container">
     <h1 class="mz-pagetitle">{{ labels.orderConfirmation }} </h1>
+    <div class="col-sm-12 mz-reset-padding-left">
+    	<h2 class="col-md-5 col-sm-12 mz-reset-padding-left">{{ labels.confirmationText }}</h2>
+        <i id="mz-print-content-confirmation" class="mz-reset-padding-left fa fa-print pull-right text-right" title="print"  aria-hidden="true" data-mz-print-order></i>
+    </div> 
 
-	<p>{{ labels.confirmationText }}</p>
-
-    <p>{{ labels.yourOrderNumber|string_format(model.orderNumber)|safe }}</p>
+    <h3>{{ labels.yourOrderNumber|string_format(model.orderNumber)|safe }}</h3>
 
   <div class="mz-l-stack">
         {% if model.hasDirectShip %}
@@ -108,3 +110,6 @@
         </div>
     </div>
 </div><!-- #order-confirmation -->
+<style>
+    {% inline_style "print-order.less" %}
+</style>

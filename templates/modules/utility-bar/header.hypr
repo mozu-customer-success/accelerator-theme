@@ -1,7 +1,6 @@
 {% if pageContext.dataViewMode == 'pending' and pageContext.isEditMode != 'true' %}
-
     {% require_script "modules/theme-utility-bar" %}
-
+    {% dropzone "header" scope="site" %}
     <div class='mz-future-date-header {% if pageContext.cookies.MZ_SHOW_FUTURE_BAR.value == false %} mz-header-hidden {% endif %}'>
         <div class='mz-content'>
             <div class='mz-header-icon'>
@@ -22,17 +21,6 @@
                         <input id='mz-pricelist-display' type="text" class='pricelist' value='{{viewData.priceListCode}}' />
                     </span>
 
-                    {% if pageContext.variations && pageContext.Variations > 0  %}
-                        <span id='mz-dropdown-variations'>
-                            <span>Variation: </span>
-                            <select id="mz-variation-selector" name="variationSelector" class="mz-variation-selector" data-mz-variations>
-                                <option class="mz-variation-selector-option" {% if model.variationId == "" %} selected="selected" {% endif %}>Base Page</option>
-                                {% for variation in model.variations %}
-                                    <option class="mz-variation-selector-option {% if model.variationId == variation.id %} selected="selected" {% endif %}>{{ variation.name }}</option>
-                                {% endfor %}
-                            </select>
-                        </span>
-                    {% endif %}
                 </span>
 
                  <span class='hidden-input'>
@@ -50,7 +38,7 @@
 
     </div>
   
-    <div class='mz-future-bar-indicator {% if pageContext.cookies.MZ_SHOW_FUTURE_BAR.value == true or pageContext.cookies.MZ_SHOW_FUTURE_BAR.value == "" %} hidden {% endif %}''>
+    <div class='mz-future-bar-indicator {% if pageContext.cookies.MZ_SHOW_FUTURE_BAR.value == true or pageContext.cookies.MZ_SHOW_FUTURE_BAR.value == "" %} hidden {% endif %}'>
         
         <span class='mz-indicator-icon'></span>
 

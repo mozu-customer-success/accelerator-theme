@@ -67,7 +67,7 @@
 
                     var legacyPWA = _.findWhere(activePayments, { paymentType: 'PayWithAmazon' });
                     if (legacyPWA) return true;
-                    
+
                     return false;
                 } else
                    return false;
@@ -186,11 +186,12 @@
 
                 var validationObj = this.validate();
 
-                if (validationObj) {
+                if (validationObj) { 
+                    /*
                     Object.keys(validationObj).forEach(function(key){
                         this.trigger('error', {message: validationObj[key]});
                     }, this);
-
+                    */
                     return false;
                 }
 
@@ -206,6 +207,11 @@
                     order.syncApiModel();
                     me.isLoading(true);
                     order.apiModel.getShippingMethodsFromContact().then(function (methods) {
+                        parent.unset("shippingMethodCode");
+                        order.apiModel.update({ fulfillmentInfo: parent.toJSON() })
+                        .then(function (o) {
+                            console.log("unset the shipping method");
+                        });
                         return parent.refreshShippingMethods(methods);
                     }).ensure(function () {
                         addr.set('candidateValidatedAddresses', null);
@@ -286,7 +292,7 @@
                     // method to the info object itself.
                     // This can only be called after the order is loaded
                     // because the order data will impact the shipping costs.
-                    me.updateShippingMethod(me.get('shippingMethodCode'), true);
+                    //me.updateShippingMethod(me.get('shippingMethodCode'), true);
                 });
             },
             relations: {
@@ -327,6 +333,9 @@
                 return this.stepStatus('complete');
             },
             updateShippingMethod: function (code, resetMessage) {
+                if(!code){
+                    code = window.checkoutViews.parentView.model.get("fulfillmentInfo").get('prevoiusSelectedMethod');
+                }
                 var available = this.get('availableShippingMethods'),
                     newMethod = _.findWhere(available, { shippingMethodCode: code }),
                     lowestValue = _.min(available, function(ob) { return ob.price; }); // Returns Infinity if no items in collection.
@@ -1426,6 +1435,7 @@
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -1438,6 +1448,7 @@
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 
@@ -2085,6 +2096,11 @@
                     billingContact.set("address", null);
                 }
 
+                    if(!this.get('fulfillmentInfo').get('shippingMethodCode')){
+                        this.trigger('error',{message: Hypr.getLabel('chooseShippingMethod')});
+                        return false;
+                    }
+                    if (this.isSubmitting) return;
 
                 if (this.isSubmitting) return;
 
@@ -2108,11 +2124,11 @@
 
                 this.isLoading(true);
 
-                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {  
+                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     process.unshift(this.addNewCustomer);
                 }
 
-                
+
                 var saveCreditCard = false;
                 if (activePayments !== null && activePayments.length > 0) {
                      var creditCard = _.findWhere(activePayments, { paymentType: 'CreditCard' });
@@ -2130,10 +2146,8 @@
                     process.push(this.addDigitalCreditToCustomerAccount);
                 }
 
-                
-                // IF not saving through paypal & has an account & has permission to save a contact (full account access| 1014) THEN
                 //save contacts
-                if ((isAuthenticated || isSavingNewCustomer) && this.hasRequiredBehavior(1014) && !this.isNonMozuCheckout()) {
+                if (!this.isNonMozuCheckout() && isAuthenticated || isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     if (!isSameBillingShippingAddress && !isSavingCreditCard) {
                         if (requiresFulfillmentInfo) process.push(this.addShippingContact);
                         if (requiresBillingInfo) process.push(this.addBillingContact);
@@ -2147,6 +2161,7 @@
                 process.push(/*this.finalPaymentReconcile, */this.apiCheckout);
 
                 api.steps(process).then(this.onCheckoutSuccess, this.onCheckoutError);
+                window.checkoutViews.parentView.model.get("fulfillmentInfo").unset('prevoiusSelectedMethod');
 
             },
             update: function() {

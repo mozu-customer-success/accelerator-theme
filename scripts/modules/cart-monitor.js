@@ -2,48 +2,57 @@
  * Watches for changes to the quantity of items in the shopping cart, to update
  * cart count indicators on the storefront.
  */
-define(['modules/jquery-mozu', 'modules/api'], function ($, api) {
+define(['modules/jquery-mozu', 'modules/api', 'bootstrap', 'modules/page-header/global-cart', 'hyprlive'], function ($, api, Bootstrap, GlobalCart, Hypr) {
 
     var $cartCount,
         user = require.mozuData('user'),
         userId = user.userId,
         $document = $(document),
         CartMonitor = {
+            setAmount: function(amount) {
+                var localAmount = Hypr.engine.render("{{price|currency}}",{ locals: { price: amount }});
+                this.$amountEl.text(localAmount);
+            },           
             setCount: function(count) {
                 this.$el.text(count);
-                savedCounts[userId] = count;
-                $.cookie('mozucartcount', JSON.stringify(savedCounts), { path: '/' });
             },
             addToCount: function(count) {
-                this.setCount(this.getCount() + count);
+                this.update(true);
             },
             getCount: function() {
                 return parseInt(this.$el.text(), 10) || 0;
             },
-            update: function() {
+            update: function(showGlobalCart) {
                 api.get('cartsummary').then(function(summary) {
+                    $.cookie('mozucart', JSON.stringify(summary.data), { path: '/' });
+                    savedCarts[userId] = summary.data;
                     $document.ready(function() {
-                        CartMonitor.setCount(summary.count());
+                        $('.ml-header-global-cart-wrapper').css('display', 'block');
+                        CartMonitor.setCount(summary.data.totalQuantity);
+                        CartMonitor.setAmount(summary.data.total); 
+                        GlobalCart.update(showGlobalCart);                         
                     });
                 });
+                
             }
         },
-        savedCounts,
-        savedCount;
+        savedCarts,
+        savedCart;
 
     try {
-        savedCounts = JSON.parse($.cookie('mozucartcount'));
+        savedCarts = JSON.parse($.cookie('mozucart'));
     } catch(e) {}
 
-    if (!savedCounts) savedCounts = {};
-    savedCount = savedCounts && savedCounts[userId];
+    if (!savedCarts) savedCarts = {};
+    savedCart = savedCarts || savedCarts[userId];
 
-    if (isNaN(savedCount)) {
+    //if (isNaN(savedCart.itemCount)) {
         CartMonitor.update();
-    }
+    //}
 
     $document.ready(function () {
-        CartMonitor.$el = $('[data-mz-role="cartmonitor"]').text(savedCount || 0);
+        CartMonitor.$el = $('[data-mz-role="cartcount"]').text(savedCart.totalQuantity || 0);
+        CartMonitor.$amountEl = $('[data-mz-role="cartamount"]').text(savedCart.total || 0);
     });
 
     return CartMonitor;

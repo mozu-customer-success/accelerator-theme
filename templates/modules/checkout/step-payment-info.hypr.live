@@ -156,7 +156,7 @@
                                     <label for="mz-payment-security-code">{{ labels.securityCode }}<span class="is-required"> *</span>:</label>
                                 </div>
                                 <div class="mz-l-formfieldgroup-cell">
-                                    <input type="tel" name="security-code" id="mz-payment-security-code" class="mz-l-formfieldgroup-halfsize" data-mz-value="card.cvv" value="{{ model.card.cvv }}" autocomplete="off"/>
+                                    <input type="tel" name="security-code" id="mz-payment-security-code" class="mz-l-formfieldgroup-halfsize" data-mz-value="card.cvv" value="{{ model.card.cvv }}" autocomplete="off" maxlength="{{themeSettings.paymentSecurityCodeLength}}"/>
                                     <span class="mz-validationmessage" data-mz-validationmessage-for="card.cvv"></span>
                                 </div>
                               </div>
@@ -179,7 +179,7 @@
             {% endif %}
         {% else %}
 
-            <h4 class="mz-checkout-nopaymentrequired mz-checkoutform">{{ labels.noPaymentRequired|string_format(model.remainingTotal|currency) }}</h4>
+            <h4 class="mz-checkout-nopaymentrequired mz-checkoutform">{% if model.remainingTotal %}{{ labels.noPaymentRequired|string_format(model.remainingTotal|currency) }}{% else %}No Payment Required{% endif %}</h4>
 
         {% endif %}
 
@@ -217,6 +217,6 @@
     </div>
 
     <div class="mz-formstep-next">
-        <button class="mz-button" data-mz-action="next">{{ labels.next }}</button>
+        <button class="mz-button" data-mz-action="next" title="Next step (Review)" aria-label="Next step (Review)">{{ labels.next }}</button>
     </div>
 </div><!-- .mz-panel-wrap -->

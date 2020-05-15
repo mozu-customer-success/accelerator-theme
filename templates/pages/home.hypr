@@ -2,12 +2,20 @@
 
 {% block title-tag-content %}{% firstof pageContext.metaTitle model.name %} - {% parent %}{% endblock title-tag-content %}
 
-{% block body-tag-classes %} mz-homepage {% endblock body-tag-classes %}
+{% block body-tag-classes %}mz-homepage{% endblock body-tag-classes %}
 
 {% block body-content %}
     {% dropzone "home" scope="template" %}
     {% dropzone "home2" scope="page" %}
-{% endblock body-content %}
+{% endblock body-content %} 
+
+{% block header-sitelogo %}
+    <h1 class="ml-header-logo-wrapper">
+        {% block store-branding %}
+            {% include "modules/page-header/store-branding" %}
+        {% endblock store-branding %}
+    </h1>
+{% endblock header-sitelogo %}
 
 {% block body-below-content %}
 {% endblock body-below-content %}

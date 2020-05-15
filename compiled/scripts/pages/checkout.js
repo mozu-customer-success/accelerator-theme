@@ -68,7 +68,7 @@ define('modules/models-checkout',[
 
                     var legacyPWA = _.findWhere(activePayments, { paymentType: 'PayWithAmazon' });
                     if (legacyPWA) return true;
-                    
+
                     return false;
                 } else
                    return false;
@@ -187,11 +187,12 @@ define('modules/models-checkout',[
 
                 var validationObj = this.validate();
 
-                if (validationObj) {
+                if (validationObj) { 
+                    /*
                     Object.keys(validationObj).forEach(function(key){
                         this.trigger('error', {message: validationObj[key]});
                     }, this);
-
+                    */
                     return false;
                 }
 
@@ -207,6 +208,11 @@ define('modules/models-checkout',[
                     order.syncApiModel();
                     me.isLoading(true);
                     order.apiModel.getShippingMethodsFromContact().then(function (methods) {
+                        parent.unset("shippingMethodCode");
+                        order.apiModel.update({ fulfillmentInfo: parent.toJSON() })
+                        .then(function (o) {
+                            console.log("unset the shipping method");
+                        });
                         return parent.refreshShippingMethods(methods);
                     }).ensure(function () {
                         addr.set('candidateValidatedAddresses', null);
@@ -287,7 +293,7 @@ define('modules/models-checkout',[
                     // method to the info object itself.
                     // This can only be called after the order is loaded
                     // because the order data will impact the shipping costs.
-                    me.updateShippingMethod(me.get('shippingMethodCode'), true);
+                    //me.updateShippingMethod(me.get('shippingMethodCode'), true);
                 });
             },
             relations: {
@@ -328,6 +334,9 @@ define('modules/models-checkout',[
                 return this.stepStatus('complete');
             },
             updateShippingMethod: function (code, resetMessage) {
+                if(!code){
+                    code = window.checkoutViews.parentView.model.get("fulfillmentInfo").get('prevoiusSelectedMethod');
+                }
                 var available = this.get('availableShippingMethods'),
                     newMethod = _.findWhere(available, { shippingMethodCode: code }),
                     lowestValue = _.min(available, function(ob) { return ob.price; }); // Returns Infinity if no items in collection.
@@ -1427,6 +1436,7 @@ define('modules/models-checkout',[
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -1439,6 +1449,7 @@ define('modules/models-checkout',[
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 
@@ -2086,6 +2097,11 @@ define('modules/models-checkout',[
                     billingContact.set("address", null);
                 }
 
+                    if(!this.get('fulfillmentInfo').get('shippingMethodCode')){
+                        this.trigger('error',{message: Hypr.getLabel('chooseShippingMethod')});
+                        return false;
+                    }
+                    if (this.isSubmitting) return;
 
                 if (this.isSubmitting) return;
 
@@ -2109,11 +2125,11 @@ define('modules/models-checkout',[
 
                 this.isLoading(true);
 
-                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {  
+                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     process.unshift(this.addNewCustomer);
                 }
 
-                
+
                 var saveCreditCard = false;
                 if (activePayments !== null && activePayments.length > 0) {
                      var creditCard = _.findWhere(activePayments, { paymentType: 'CreditCard' });
@@ -2131,10 +2147,8 @@ define('modules/models-checkout',[
                     process.push(this.addDigitalCreditToCustomerAccount);
                 }
 
-                
-                // IF not saving through paypal & has an account & has permission to save a contact (full account access| 1014) THEN
                 //save contacts
-                if ((isAuthenticated || isSavingNewCustomer) && this.hasRequiredBehavior(1014) && !this.isNonMozuCheckout()) {
+                if (!this.isNonMozuCheckout() && isAuthenticated || isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     if (!isSameBillingShippingAddress && !isSavingCreditCard) {
                         if (requiresFulfillmentInfo) process.push(this.addShippingContact);
                         if (requiresBillingInfo) process.push(this.addBillingContact);
@@ -2148,6 +2162,7 @@ define('modules/models-checkout',[
                 process.push(/*this.finalPaymentReconcile, */this.apiCheckout);
 
                 api.steps(process).then(this.onCheckoutSuccess, this.onCheckoutError);
+                window.checkoutViews.parentView.model.get("fulfillmentInfo").unset('prevoiusSelectedMethod');
 
             },
             update: function() {
@@ -3221,10 +3236,10 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext) {
 define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: modal.js v3.2.0
+ * Bootstrap: modal.js v3.3.7
  * http://getbootstrap.com/javascript/#modals
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -3236,12 +3251,15 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
   // ======================
 
   var Modal = function (element, options) {
-    this.options        = options
-    this.$body          = $(document.body)
-    this.$element       = $(element)
-    this.$backdrop      =
-    this.isShown        = null
-    this.scrollbarWidth = 0
+    this.options             = options
+    this.$body               = $(document.body)
+    this.$element            = $(element)
+    this.$dialog             = this.$element.find('.modal-dialog')
+    this.$backdrop           = null
+    this.isShown             = null
+    this.originalBodyPad     = null
+    this.scrollbarWidth      = 0
+    this.ignoreBackdropClick = false
 
     if (this.options.remote) {
       this.$element
@@ -3252,7 +3270,10 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     }
   }
 
-  Modal.VERSION  = '3.2.0'
+  Modal.VERSION  = '3.3.7'
+
+  Modal.TRANSITION_DURATION = 300
+  Modal.BACKDROP_TRANSITION_DURATION = 150
 
   Modal.DEFAULTS = {
     backdrop: true,
@@ -3275,12 +3296,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     this.isShown = true
 
     this.checkScrollbar()
+    this.setScrollbar()
     this.$body.addClass('modal-open')
 
-    this.setScrollbar()
     this.escape()
+    this.resize()
 
     this.$element.on('click.dismiss.bs.modal', '[data-dismiss="modal"]', $.proxy(this.hide, this))
+
+    this.$dialog.on('mousedown.dismiss.bs.modal', function () {
+      that.$element.one('mouseup.dismiss.bs.modal', function (e) {
+        if ($(e.target).is(that.$element)) that.ignoreBackdropClick = true
+      })
+    })
 
     this.backdrop(function () {
       var transition = $.support.transition && that.$element.hasClass('fade')
@@ -3293,24 +3321,24 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
         .show()
         .scrollTop(0)
 
+      that.adjustDialog()
+
       if (transition) {
         that.$element[0].offsetWidth // force reflow
       }
 
-      that.$element
-        .addClass('in')
-        .attr('aria-hidden', false)
+      that.$element.addClass('in')
 
       that.enforceFocus()
 
       var e = $.Event('shown.bs.modal', { relatedTarget: _relatedTarget })
 
       transition ?
-        that.$element.find('.modal-dialog') // wait for modal to slide in
+        that.$dialog // wait for modal to slide in
           .one('bsTransitionEnd', function () {
             that.$element.trigger('focus').trigger(e)
           })
-          .emulateTransitionEnd(300) :
+          .emulateTransitionEnd(Modal.TRANSITION_DURATION) :
         that.$element.trigger('focus').trigger(e)
     })
   }
@@ -3326,22 +3354,22 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
 
     this.isShown = false
 
-    this.$body.removeClass('modal-open')
-
-    this.resetScrollbar()
     this.escape()
+    this.resize()
 
     $(document).off('focusin.bs.modal')
 
     this.$element
       .removeClass('in')
-      .attr('aria-hidden', true)
       .off('click.dismiss.bs.modal')
+      .off('mouseup.dismiss.bs.modal')
+
+    this.$dialog.off('mousedown.dismiss.bs.modal')
 
     $.support.transition && this.$element.hasClass('fade') ?
       this.$element
         .one('bsTransitionEnd', $.proxy(this.hideModal, this))
-        .emulateTransitionEnd(300) :
+        .emulateTransitionEnd(Modal.TRANSITION_DURATION) :
       this.hideModal()
   }
 
@@ -3349,7 +3377,9 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     $(document)
       .off('focusin.bs.modal') // guard against infinite focus loop
       .on('focusin.bs.modal', $.proxy(function (e) {
-        if (this.$element[0] !== e.target && !this.$element.has(e.target).length) {
+        if (document !== e.target &&
+            this.$element[0] !== e.target &&
+            !this.$element.has(e.target).length) {
           this.$element.trigger('focus')
         }
       }, this))
@@ -3357,11 +3387,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
 
   Modal.prototype.escape = function () {
     if (this.isShown && this.options.keyboard) {
-      this.$element.on('keyup.dismiss.bs.modal', $.proxy(function (e) {
+      this.$element.on('keydown.dismiss.bs.modal', $.proxy(function (e) {
         e.which == 27 && this.hide()
       }, this))
     } else if (!this.isShown) {
-      this.$element.off('keyup.dismiss.bs.modal')
+      this.$element.off('keydown.dismiss.bs.modal')
+    }
+  }
+
+  Modal.prototype.resize = function () {
+    if (this.isShown) {
+      $(window).on('resize.bs.modal', $.proxy(this.handleUpdate, this))
+    } else {
+      $(window).off('resize.bs.modal')
     }
   }
 
@@ -3369,6 +3407,9 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     var that = this
     this.$element.hide()
     this.backdrop(function () {
+      that.$body.removeClass('modal-open')
+      that.resetAdjustments()
+      that.resetScrollbar()
       that.$element.trigger('hidden.bs.modal')
     })
   }
@@ -3385,14 +3426,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     if (this.isShown && this.options.backdrop) {
       var doAnimate = $.support.transition && animate
 
-      this.$backdrop = $('<div class="modal-backdrop ' + animate + '" />')
+      this.$backdrop = $(document.createElement('div'))
+        .addClass('modal-backdrop ' + animate)
         .appendTo(this.$body)
 
       this.$element.on('click.dismiss.bs.modal', $.proxy(function (e) {
+        if (this.ignoreBackdropClick) {
+          this.ignoreBackdropClick = false
+          return
+        }
         if (e.target !== e.currentTarget) return
         this.options.backdrop == 'static'
-          ? this.$element[0].focus.call(this.$element[0])
-          : this.hide.call(this)
+          ? this.$element[0].focus()
+          : this.hide()
       }, this))
 
       if (doAnimate) this.$backdrop[0].offsetWidth // force reflow
@@ -3404,7 +3450,7 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
       doAnimate ?
         this.$backdrop
           .one('bsTransitionEnd', callback)
-          .emulateTransitionEnd(150) :
+          .emulateTransitionEnd(Modal.BACKDROP_TRANSITION_DURATION) :
         callback()
 
     } else if (!this.isShown && this.$backdrop) {
@@ -3417,7 +3463,7 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
       $.support.transition && this.$element.hasClass('fade') ?
         this.$backdrop
           .one('bsTransitionEnd', callbackRemove)
-          .emulateTransitionEnd(150) :
+          .emulateTransitionEnd(Modal.BACKDROP_TRANSITION_DURATION) :
         callbackRemove()
 
     } else if (callback) {
@@ -3425,18 +3471,46 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     }
   }
 
+  // these following methods are used to handle overflowing modals
+
+  Modal.prototype.handleUpdate = function () {
+    this.adjustDialog()
+  }
+
+  Modal.prototype.adjustDialog = function () {
+    var modalIsOverflowing = this.$element[0].scrollHeight > document.documentElement.clientHeight
+
+    this.$element.css({
+      paddingLeft:  !this.bodyIsOverflowing && modalIsOverflowing ? this.scrollbarWidth : '',
+      paddingRight: this.bodyIsOverflowing && !modalIsOverflowing ? this.scrollbarWidth : ''
+    })
+  }
+
+  Modal.prototype.resetAdjustments = function () {
+    this.$element.css({
+      paddingLeft: '',
+      paddingRight: ''
+    })
+  }
+
   Modal.prototype.checkScrollbar = function () {
-    if (document.body.clientWidth >= window.innerWidth) return
-    this.scrollbarWidth = this.scrollbarWidth || this.measureScrollbar()
+    var fullWindowWidth = window.innerWidth
+    if (!fullWindowWidth) { // workaround for missing window.innerWidth in IE8
+      var documentElementRect = document.documentElement.getBoundingClientRect()
+      fullWindowWidth = documentElementRect.right - Math.abs(documentElementRect.left)
+    }
+    this.bodyIsOverflowing = document.body.clientWidth < fullWindowWidth
+    this.scrollbarWidth = this.measureScrollbar()
   }
 
   Modal.prototype.setScrollbar = function () {
     var bodyPad = parseInt((this.$body.css('padding-right') || 0), 10)
-    if (this.scrollbarWidth) this.$body.css('padding-right', bodyPad + this.scrollbarWidth)
+    this.originalBodyPad = document.body.style.paddingRight || ''
+    if (this.bodyIsOverflowing) this.$body.css('padding-right', bodyPad + this.scrollbarWidth)
   }
 
   Modal.prototype.resetScrollbar = function () {
-    this.$body.css('padding-right', '')
+    this.$body.css('padding-right', this.originalBodyPad)
   }
 
   Modal.prototype.measureScrollbar = function () { // thx walsh
@@ -3968,9 +4042,19 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
         },
         multiShipValidation : {
             ShippingDestinations :{
-                fn: function(value, attr){
-                    var destinationErrors = [];
-                    this.parent.get('items').forEach(function(item, idx){
+              fn: function (value, attr) {
+                    var destinationErrors = [],self = this;
+                    if (!self.get("isMultiShipMode")) {
+                        var isValid = self.selectedDestination();
+                        //console.log("asdsa");
+                        self.parent.get('items').forEach(function (item, idx) {
+                            if (typeof item.attributes.destinationId == "undefined") {
+                                return destinationErrors.push({ "destinationId": Hypr.getLabel('genericRequired') });
+                            }
+                        });
+                        return (destinationErrors.length) ? destinationErrors : false;
+                    }
+                    self.parent.get('items').forEach(function (item, idx) {
                         var itemValid = item.validate();
                         if (itemValid && item.get('fulfillmentMethod') === "Ship") {
                             destinationErrors.push(itemValid);
@@ -4186,13 +4270,13 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
             var validationObj = this.validate();
 
             if (validationObj) {
-                if (validationObj) {
+               /* if (validationObj) {
                     Object.keys(validationObj.singleShippingAddess).forEach(function(key) {
                         this.trigger('error', {
                             message: validationObj.singleShippingAddess[key]
                         });
                     }, this);
-                }
+                }*/
                 return false;
             }
             return true;
@@ -4305,25 +4389,34 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
         validateModel: function() {
                 this.validation = this.multiShipValidation;
                 var validationObj = this.validate();
-
                 if(this.requiresDigitalFulfillmentContact()){
                      var digitalValid = this.digitalGiftCardValid();
                      if(!digitalValid) { return false; }
                 }
-
                 if (this.requiresFulfillmentInfo() && validationObj) {
                     if (!this.isMultiShipMode() && this.getCheckout().get('destinations').nonGiftCardDestinations().length < 2) {
                         this.singleShippingAddressValid();
                         return false;
                     }
-
-                    Object.keys(validationObj.ShippingDestinations).forEach(function(key) {
+                    if (!this.get("isMultiShipMode")) {
+                        var isValid = this.selectedDestination();
+                        var errorMsgDOM = document.getElementsByClassName("shipping-contact-id")[0];
+                        if (typeof errorMsgDOM !== "undefined") {
+                            if (!isValid) {
+                               this.parent.get('destinations').singleShippingDestination().set('shippingError',true);
+                            }else{
+                               this.parent.get('destinations').singleShippingDestination().set('shippingError',false);
+                            }
+                            this.trigger('render');
+                        }
+                    }
+                    /*Object.keys(validationObj.ShippingDestinations).forEach(function(key) {
                         Object.keys(validationObj.ShippingDestinations[key]).forEach(function(keyLevel2) {
                             this.trigger('error', {
                                 message: validationObj.ShippingDestinations[key][keyLevel2]
                             });
                         }, this);
-                    }, this);
+                    }, this);*/
                     return false;
                 }
                 return true;
@@ -4555,7 +4648,9 @@ define('modules/checkout/steps/step3/models-payment',[
                 savedPaymentMethodId: {
                     fn: "validateSavedPaymentMethodId"
                 },
-
+                "contactId": {
+                    fn: "validateBillingAddress"
+                },
                 'billingContact.email': {
                     pattern: 'email',
                     msg: Hypr.getLabel('emailMissing')
@@ -4570,6 +4665,11 @@ define('modules/checkout/steps/step3/models-payment',[
                 card: PaymentMethods.CreditCardWithCVV,
                 check: PaymentMethods.Check,
                 purchaseOrder: PaymentMethods.PurchaseOrder
+            },
+            validateBillingAddress: function () {
+                var isValid = this.selectedBillingDestination();
+                if (!isValid && $('[data-mz-value="contactId"]:visible').length)
+                    return Hypr.getLabel('billingAddressRequired');
             },
             validatePaymentType: function(value, attr) {
                 var order = this.getOrder();
@@ -5645,6 +5745,7 @@ define('modules/checkout/steps/step3/models-payment',[
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -5657,6 +5758,7 @@ define('modules/checkout/steps/step3/models-payment',[
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 
@@ -7429,18 +7531,46 @@ require(["modules/jquery-mozu",
             billingAddress.set('countryCode', addressDefaults.countryCode);
             billingAddress.set('addressType', addressDefaults.addressType);
             billingAddress.set('candidateValidatedAddresses', addressDefaults.candidateValidatedAddresses);
+        },
+        additionalEvents: {
+            "input [name='shippingphone']": "allowDigit"
+        },
+        allowDigit:function(e){
+            e.target.value= e.target.value.replace(/[^\d]/g,'');
         }
     });
 
     var ShippingInfoView = CheckoutStepView.extend({
         templateName: 'modules/checkout/step-shipping-method',
         renderOnChange: [
-            'availableShippingMethods'
+            'availableShippingMethods',
+            'shippingMethodCode'
         ],
+        initStepView: function() {
+            var me  = this;
+            var isShippingAddressValid = me.model.get("fulfillmentContact").isValid();
+            if(isShippingAddressValid)
+            {
+                var order = me.model.getOrder();
+                /*if(this.model.get('availableShippingMethods').length){
+                    var availableMethod = this.model.get('availableShippingMethods'),
+                    lowestValue = _.min(availableMethod, function(ob) { return ob.price; });
+                    this.model.set("shippingMethodCode", lowestValue.shippingMethodCode);
+                }*/
+                me.model.unset("shippingMethodCode");
+                order.apiModel.update({ fulfillmentInfo: me.model.toJSON() })
+                .then(function (o) {
+                    console.log("unset the shipping method");
+                });
+
+            }
+            this.model.initStep();
+        },
         additionalEvents: {
             "change [data-mz-shipping-method]": "updateShippingMethod"
         },
         updateShippingMethod: function (e) {
+            window.checkoutViews.parentView.model.get("fulfillmentInfo").set('prevoiusSelectedMethod', this.$('[data-mz-shipping-method]:checked').val());
             this.model.updateShippingMethod(this.$('[data-mz-shipping-method]:checked').val());
         }
     });
@@ -7508,15 +7638,51 @@ require(["modules/jquery-mozu",
             'savedPaymentMethodId'
         ],
         additionalEvents: {
+            "blur #mz-payment-credit-card-number": "changeCardType",
             "change [data-mz-digital-credit-enable]": "enableDigitalCredit",
             "change [data-mz-digital-credit-amount]": "applyDigitalCredit",
             "change [data-mz-gift-card-amount]": "applyGiftCard",
             "change [data-mz-gift-card-enable]": "enableGiftCard",
             "change [data-mz-digital-add-remainder-to-customer]": "addRemainderToCustomer",
             "change [name='paymentType']": "resetPaymentData",
+            "input  [name='security-code'],[name='credit-card-number'],[name='shippingphone']": "allowDigit",
             "change [data-mz-purchase-order-payment-term]": "updatePurchaseOrderPaymentTerm"
         },
+        changeCardType:function(e){
+            window.checkoutModel = this.model;
+            var number = e.target.value;
+            var cardType='';
+            // visa
+            var re = new RegExp("^4");
+            if (number.match(re) !== null){
+                cardType = "VISA";
+            }
 
+            // Mastercard
+            // Updated for Mastercard 2017 BINs expansion
+             if (/^(5[1-5][0-9]{14}|2(22[1-9][0-9]{12}|2[3-9][0-9]{13}|[3-6][0-9]{14}|7[0-1][0-9]{13}|720[0-9]{12}))$/.test(number))
+                cardType = "MC";
+
+            // AMEX
+            re = new RegExp("^3[47]");
+            if (number.match(re) !== null)
+                cardType = "AMEX";
+
+            // Discover
+            re = new RegExp("^(6011|622(12[6-9]|1[3-9][0-9]|[2-8][0-9]{2}|9[0-1][0-9]|92[0-5]|64[4-9])|65)");
+            if (number.match(re) !== null)
+                cardType = "DISCOVER";
+
+            $('.mz-card-type-images').find('span').removeClass('active');
+            if(cardType){
+                this.model.set('card.paymentOrCardType',cardType);
+                $("#mz-payment-credit-card-type").val(cardType);
+                $('.mz-card-type-images').find('span[data-mz-card-type-image="'+cardType+'"]').addClass('active');
+            }
+            else{
+                this.model.set('card.paymentOrCardType',null);
+            }
+        },
         initialize: function () {
             // this.addPOCustomFieldAutoUpdate();
             this.listenTo(this.model, 'change:giftCardNumber', this.onEnterGiftCardInfo, this);
@@ -7534,10 +7700,14 @@ require(["modules/jquery-mozu",
             }, this);
             this.codeEntered = !!this.model.get('digitalCreditCode');
         },
+        allowDigit:function(e){
+            e.target.value= e.target.value.replace(/[^\d]/g,'');
+        },
         resetPaymentData: function (e) {
             if (e.target !== $('[data-mz-saved-credit-card]')[0]) {
                 $("[name='savedPaymentMethods']").val('0');
             }
+            this.editing.savedCard = true;
             this.model.clear();
             this.model.resetAddressDefaults();
             if(HyprLiveContext.locals.siteContext.checkoutSettings.purchaseOrder.isEnabled) {
@@ -7575,6 +7745,10 @@ require(["modules/jquery-mozu",
             var newType = $(e.currentTarget).val();
             this.model.set('usingSavedCard', e.currentTarget.hasAttribute('data-mz-saved-credit-card'));
             this.model.set('paymentType', newType);
+        },
+        edit: function () {
+            this.model.edit();
+            this.beginEditingCard();
         },
         beginEditingCard: function() {
             var me = this;
@@ -7683,11 +7857,11 @@ require(["modules/jquery-mozu",
         onEnterDigitalCreditCode: function(model, code) {
             if (code && !this.codeEntered) {
                 this.codeEntered = true;
-                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', false);
+                this.$el.find('input.digital-credit-code').siblings('button').prop('disabled', false);
             }
             if (!code && this.codeEntered) {
                 this.codeEntered = false;
-                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', true);
+                this.$el.find('input.digital-credit-code').siblings('button').prop('disabled', true);
             }
         },
         enableDigitalCredit: function(e) {
@@ -7828,8 +8002,25 @@ require(["modules/jquery-mozu",
             this.model.addCoupon().ensure(function() {
                 self.$el.removeClass('is-loading');
                 self.model.unset('couponCode');
-                self.render();
+                window.checkoutViews.couponCode.render();
                 self.messageView.render();
+            }).then(function(res){
+                if(res && res.status == "error"){
+                    window.checkoutViews.couponCode.model.trigger('error', {
+                        message: Hypr.getLabel('promoCodeError', res.code)
+                    });
+                }else{
+                    window.checkoutViews.parentView.model.get("fulfillmentInfo").unset("shippingMethodCode");
+                    window.checkoutViews.parentView.model.apiModel.update({ fulfillmentInfo: window.checkoutViews.parentView.model.get("fulfillmentInfo").toJSON() })
+                    .then(function (o) {
+                        console.log("unset the shipping method");
+                        window.checkoutViews.parentView.model.apiModel.getShippingMethodsFromContact().then(function(res){
+                            console.log(res);
+                            window.checkoutViews.parentView.model.get("fulfillmentInfo").unset("shippingMethodCode");
+                            window.checkoutViews.steps.shippingInfo.model.refreshShippingMethods(res);
+                        });
+                    });
+                }
             });
         },
         handleEnterKey: function () {
@@ -7980,6 +8171,8 @@ require(["modules/jquery-mozu",
             };
 
         window.checkoutViews = checkoutViews;
+
+        checkoutViews.orderSummary.render();
 
         checkoutModel.on('complete', function() {
             CartMonitor.setCount(0);

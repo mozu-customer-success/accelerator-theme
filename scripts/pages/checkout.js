@@ -124,18 +124,46 @@ require(["modules/jquery-mozu",
             billingAddress.set('countryCode', addressDefaults.countryCode);
             billingAddress.set('addressType', addressDefaults.addressType);
             billingAddress.set('candidateValidatedAddresses', addressDefaults.candidateValidatedAddresses);
+        },
+        additionalEvents: {
+            "input [name='shippingphone']": "allowDigit"
+        },
+        allowDigit:function(e){
+            e.target.value= e.target.value.replace(/[^\d]/g,'');
         }
     });
 
     var ShippingInfoView = CheckoutStepView.extend({
         templateName: 'modules/checkout/step-shipping-method',
         renderOnChange: [
-            'availableShippingMethods'
+            'availableShippingMethods',
+            'shippingMethodCode'
         ],
+        initStepView: function() {
+            var me  = this;
+            var isShippingAddressValid = me.model.get("fulfillmentContact").isValid();
+            if(isShippingAddressValid)
+            {
+                var order = me.model.getOrder();
+                /*if(this.model.get('availableShippingMethods').length){
+                    var availableMethod = this.model.get('availableShippingMethods'),
+                    lowestValue = _.min(availableMethod, function(ob) { return ob.price; });
+                    this.model.set("shippingMethodCode", lowestValue.shippingMethodCode);
+                }*/
+                me.model.unset("shippingMethodCode");
+                order.apiModel.update({ fulfillmentInfo: me.model.toJSON() })
+                .then(function (o) {
+                    console.log("unset the shipping method");
+                });
+
+            }
+            this.model.initStep();
+        },
         additionalEvents: {
             "change [data-mz-shipping-method]": "updateShippingMethod"
         },
         updateShippingMethod: function (e) {
+            window.checkoutViews.parentView.model.get("fulfillmentInfo").set('prevoiusSelectedMethod', this.$('[data-mz-shipping-method]:checked').val());
             this.model.updateShippingMethod(this.$('[data-mz-shipping-method]:checked').val());
         }
     });
@@ -203,15 +231,51 @@ require(["modules/jquery-mozu",
             'savedPaymentMethodId'
         ],
         additionalEvents: {
+            "blur #mz-payment-credit-card-number": "changeCardType",
             "change [data-mz-digital-credit-enable]": "enableDigitalCredit",
             "change [data-mz-digital-credit-amount]": "applyDigitalCredit",
             "change [data-mz-gift-card-amount]": "applyGiftCard",
             "change [data-mz-gift-card-enable]": "enableGiftCard",
             "change [data-mz-digital-add-remainder-to-customer]": "addRemainderToCustomer",
             "change [name='paymentType']": "resetPaymentData",
+            "input  [name='security-code'],[name='credit-card-number'],[name='shippingphone']": "allowDigit",
             "change [data-mz-purchase-order-payment-term]": "updatePurchaseOrderPaymentTerm"
         },
+        changeCardType:function(e){
+            window.checkoutModel = this.model;
+            var number = e.target.value;
+            var cardType='';
+            // visa
+            var re = new RegExp("^4");
+            if (number.match(re) !== null){
+                cardType = "VISA";
+            }
 
+            // Mastercard
+            // Updated for Mastercard 2017 BINs expansion
+             if (/^(5[1-5][0-9]{14}|2(22[1-9][0-9]{12}|2[3-9][0-9]{13}|[3-6][0-9]{14}|7[0-1][0-9]{13}|720[0-9]{12}))$/.test(number))
+                cardType = "MC";
+
+            // AMEX
+            re = new RegExp("^3[47]");
+            if (number.match(re) !== null)
+                cardType = "AMEX";
+
+            // Discover
+            re = new RegExp("^(6011|622(12[6-9]|1[3-9][0-9]|[2-8][0-9]{2}|9[0-1][0-9]|92[0-5]|64[4-9])|65)");
+            if (number.match(re) !== null)
+                cardType = "DISCOVER";
+
+            $('.mz-card-type-images').find('span').removeClass('active');
+            if(cardType){
+                this.model.set('card.paymentOrCardType',cardType);
+                $("#mz-payment-credit-card-type").val(cardType);
+                $('.mz-card-type-images').find('span[data-mz-card-type-image="'+cardType+'"]').addClass('active');
+            }
+            else{
+                this.model.set('card.paymentOrCardType',null);
+            }
+        },
         initialize: function () {
             // this.addPOCustomFieldAutoUpdate();
             this.listenTo(this.model, 'change:giftCardNumber', this.onEnterGiftCardInfo, this);
@@ -229,10 +293,14 @@ require(["modules/jquery-mozu",
             }, this);
             this.codeEntered = !!this.model.get('digitalCreditCode');
         },
+        allowDigit:function(e){
+            e.target.value= e.target.value.replace(/[^\d]/g,'');
+        },
         resetPaymentData: function (e) {
             if (e.target !== $('[data-mz-saved-credit-card]')[0]) {
                 $("[name='savedPaymentMethods']").val('0');
             }
+            this.editing.savedCard = true;
             this.model.clear();
             this.model.resetAddressDefaults();
             if(HyprLiveContext.locals.siteContext.checkoutSettings.purchaseOrder.isEnabled) {
@@ -270,6 +338,10 @@ require(["modules/jquery-mozu",
             var newType = $(e.currentTarget).val();
             this.model.set('usingSavedCard', e.currentTarget.hasAttribute('data-mz-saved-credit-card'));
             this.model.set('paymentType', newType);
+        },
+        edit: function () {
+            this.model.edit();
+            this.beginEditingCard();
         },
         beginEditingCard: function() {
             var me = this;
@@ -378,11 +450,11 @@ require(["modules/jquery-mozu",
         onEnterDigitalCreditCode: function(model, code) {
             if (code && !this.codeEntered) {
                 this.codeEntered = true;
-                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', false);
+                this.$el.find('input.digital-credit-code').siblings('button').prop('disabled', false);
             }
             if (!code && this.codeEntered) {
                 this.codeEntered = false;
-                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', true);
+                this.$el.find('input.digital-credit-code').siblings('button').prop('disabled', true);
             }
         },
         enableDigitalCredit: function(e) {
@@ -523,8 +595,25 @@ require(["modules/jquery-mozu",
             this.model.addCoupon().ensure(function() {
                 self.$el.removeClass('is-loading');
                 self.model.unset('couponCode');
-                self.render();
+                window.checkoutViews.couponCode.render();
                 self.messageView.render();
+            }).then(function(res){
+                if(res && res.status == "error"){
+                    window.checkoutViews.couponCode.model.trigger('error', {
+                        message: Hypr.getLabel('promoCodeError', res.code)
+                    });
+                }else{
+                    window.checkoutViews.parentView.model.get("fulfillmentInfo").unset("shippingMethodCode");
+                    window.checkoutViews.parentView.model.apiModel.update({ fulfillmentInfo: window.checkoutViews.parentView.model.get("fulfillmentInfo").toJSON() })
+                    .then(function (o) {
+                        console.log("unset the shipping method");
+                        window.checkoutViews.parentView.model.apiModel.getShippingMethodsFromContact().then(function(res){
+                            console.log(res);
+                            window.checkoutViews.parentView.model.get("fulfillmentInfo").unset("shippingMethodCode");
+                            window.checkoutViews.steps.shippingInfo.model.refreshShippingMethods(res);
+                        });
+                    });
+                }
             });
         },
         handleEnterKey: function () {
@@ -675,6 +764,8 @@ require(["modules/jquery-mozu",
             };
 
         window.checkoutViews = checkoutViews;
+
+        checkoutViews.orderSummary.render();
 
         checkoutModel.on('complete', function() {
             CartMonitor.setCount(0);

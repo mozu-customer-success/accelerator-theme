@@ -11,10 +11,10 @@
 			{% endif %}
 			</div>
 		{% endfor %}
-		<span class="mz-item-rowtotal {% if item.unitPrice.saleAmount %}is-saleprice{% endif %}">{{ item.discountedTotal|currency }}</span>
+		<span class="mz-item-rowtotal{% if item.unitPrice.saleAmount %} is-saleprice{% endif %}">{{ item.discountedTotal|currency }}</span>
 	{% else %}
-		<span class="mz-item-rowtotal {% if item.unitPrice.saleAmount %}is-saleprice{% endif %}">{{ item.subtotal|currency }}</span>
+		<span class="mz-item-rowtotal{% if item.unitPrice.saleAmount %} is-saleprice{% endif %}">{{ item.subtotal|currency }}</span>
 	{% endif %}
 {% else %}
-	<span class="mz-item-rowtotal {% if item.unitPrice.saleAmount %}is-saleprice{% endif %}">{{ item.subtotal|currency }}</span>
+	<span class="mz-item-rowtotal{% if item.unitPrice.saleAmount %} is-saleprice{% endif %}">{{ item.subtotal|currency }}</span>
 {% endif %}

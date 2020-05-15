@@ -15,6 +15,13 @@ modules/backbone-mozu-pagedcollection.js
 modules/views-messages.js
 modules/backbone-mozu-view.js
 modules/backbone-mozu.js
+vendor/bootstrap/js/bootstrap.min.js
+modules/models-price.js
+modules/models-product-options.js
+modules/models-family.js
+modules/models-product.js
+modules/metrics.js
+modules/page-header/global-cart.js
 modules/cart-monitor.js
 modules/contextify.js
 shim!vendor/bootstrap/js/tooltip[modules/jquery-mozu=jQuery]>jQuery
@@ -22,11 +29,11 @@ shim!vendor/bootstrap/js/popover[shim!vendor/bootstrap/js/tooltip[modules/jquery
 vendor/jquery-placeholder/jquery.placeholder.js
 modules/login-links.js
 modules/models-address.js
-modules/models-price.js
-modules/models-product.js
 modules/models-returns.js
 modules/models-orders.js
 modules/models-paymentmethods.js
+vendor/jquery.blockUI/jquery.blockUI.min.js
+modules/block-ui.js
 modules/models-attributes.js
 modules/models-b2b-account.js
 modules/models-customer.js
@@ -40,9 +47,12 @@ modules/search-autocomplete.js
 modules/url-dispatcher.js
 modules/intent-emitter.js
 modules/get-partial-view.js
+modules/color-swatches.js
+modules/category/infinite-scroller.js
 modules/views-collections.js
 modules/views-paging.js
 modules/views-productlists.js
+vendor/jquery/lazysizes-custom.min.js
 
 pages/cart.js
 ----------------
@@ -154,7 +164,11 @@ pages/myaccount.js
 
 pages/product.js
 ----------------
+vendor/jquery-bxslider/jquery.bxslider.min.js
+vendor/jquery-elevatezoom/jquery.elevatezoom.min.js
 modules/views-productimages.js
+pages/family.js
+vendor/async/async.min.js
 pages/product.js
 
 pages/search.js

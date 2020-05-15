@@ -2,7 +2,7 @@
 
 {% block title-tag-content %}{% firstof pageContext.metaTitle labels.logIn %} - {% parent %}{% endblock title-tag-content %}
 
-{% block body-tag-classes %} mz-loginpage {% endblock body-tag-classes %}
+{% block body-tag-classes %}mz-loginpage{% endblock body-tag-classes %}
 
 {% block body-content %}
     <div class="mz-l-container">
@@ -12,7 +12,7 @@
                 <h1 class="mz-pagetitle">{{ labels.loginNoAccount }}</h1>
                  <div class="mz-l-formfieldgroup-row">
                     <div class="mz-l-formfieldgroup-cell">
-                        <button class="mz-button mz-button-large mz-login-button" data-mz-action="signup">
+                        <button class="mz-button primary-btn mz-login-button" data-mz-action="signup">
                             {{ labels.signUpLink }}
                         </button>
                         <div class="mz-l-formfieldgroup-cell">
@@ -37,18 +37,18 @@
                    <div class="mz-l-formfieldgroup">
                         <div class="mz-l-formfieldgroup-row">
                             <div class="mz-l-formfieldgroup-cell">
-                                <label for="email">{{ labels.logInInput }}</label>
+                                <label for="emailLogin">{{ labels.logInInput }}</label>
                             </div>
                             <div class="mz-l-formfieldgroup-cell">
-                                <input name="email" value="{{model.email|default:user.email}}" type="email" data-mz-login-email />
+                                <input name="email" id="emailLogin" value="{{model.email|default:user.email}}" type="email" data-mz-login-email maxlength="{{themeSettings.emailLength}}"/>
                             </div>
                         </div>
                         <div class="mz-l-formfieldgroup-row">
                             <div class="mz-l-formfieldgroup-cell">
-                                <label for="password">{{ labels.password }}</label>
+                                <label for="loginPagePassword">{{ labels.password }}</label>
                             </div>
                             <div class="mz-l-formfieldgroup-cell">
-                                <input name="password"  type="password" data-mz-login-password/>
+                                <input id="loginPagePassword" name="password"  type="password" data-mz-login-password maxlength="{{themeSettings.passwordMaxLength}}" />
                             </div>
                         </div>
                         {% if themeSettings.enableRecaptcha %}

@@ -639,10 +639,10 @@ define('modules/preserve-element-through-render',['underscore'], function(_) {
 define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQuery) { 
 
 /* ========================================================================
- * Bootstrap: modal.js v3.2.0
+ * Bootstrap: modal.js v3.3.7
  * http://getbootstrap.com/javascript/#modals
  * ========================================================================
- * Copyright 2011-2014 Twitter, Inc.
+ * Copyright 2011-2016 Twitter, Inc.
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * ======================================================================== */
 
@@ -654,12 +654,15 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
   // ======================
 
   var Modal = function (element, options) {
-    this.options        = options
-    this.$body          = $(document.body)
-    this.$element       = $(element)
-    this.$backdrop      =
-    this.isShown        = null
-    this.scrollbarWidth = 0
+    this.options             = options
+    this.$body               = $(document.body)
+    this.$element            = $(element)
+    this.$dialog             = this.$element.find('.modal-dialog')
+    this.$backdrop           = null
+    this.isShown             = null
+    this.originalBodyPad     = null
+    this.scrollbarWidth      = 0
+    this.ignoreBackdropClick = false
 
     if (this.options.remote) {
       this.$element
@@ -670,7 +673,10 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     }
   }
 
-  Modal.VERSION  = '3.2.0'
+  Modal.VERSION  = '3.3.7'
+
+  Modal.TRANSITION_DURATION = 300
+  Modal.BACKDROP_TRANSITION_DURATION = 150
 
   Modal.DEFAULTS = {
     backdrop: true,
@@ -693,12 +699,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     this.isShown = true
 
     this.checkScrollbar()
+    this.setScrollbar()
     this.$body.addClass('modal-open')
 
-    this.setScrollbar()
     this.escape()
+    this.resize()
 
     this.$element.on('click.dismiss.bs.modal', '[data-dismiss="modal"]', $.proxy(this.hide, this))
+
+    this.$dialog.on('mousedown.dismiss.bs.modal', function () {
+      that.$element.one('mouseup.dismiss.bs.modal', function (e) {
+        if ($(e.target).is(that.$element)) that.ignoreBackdropClick = true
+      })
+    })
 
     this.backdrop(function () {
       var transition = $.support.transition && that.$element.hasClass('fade')
@@ -711,24 +724,24 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
         .show()
         .scrollTop(0)
 
+      that.adjustDialog()
+
       if (transition) {
         that.$element[0].offsetWidth // force reflow
       }
 
-      that.$element
-        .addClass('in')
-        .attr('aria-hidden', false)
+      that.$element.addClass('in')
 
       that.enforceFocus()
 
       var e = $.Event('shown.bs.modal', { relatedTarget: _relatedTarget })
 
       transition ?
-        that.$element.find('.modal-dialog') // wait for modal to slide in
+        that.$dialog // wait for modal to slide in
           .one('bsTransitionEnd', function () {
             that.$element.trigger('focus').trigger(e)
           })
-          .emulateTransitionEnd(300) :
+          .emulateTransitionEnd(Modal.TRANSITION_DURATION) :
         that.$element.trigger('focus').trigger(e)
     })
   }
@@ -744,22 +757,22 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
 
     this.isShown = false
 
-    this.$body.removeClass('modal-open')
-
-    this.resetScrollbar()
     this.escape()
+    this.resize()
 
     $(document).off('focusin.bs.modal')
 
     this.$element
       .removeClass('in')
-      .attr('aria-hidden', true)
       .off('click.dismiss.bs.modal')
+      .off('mouseup.dismiss.bs.modal')
+
+    this.$dialog.off('mousedown.dismiss.bs.modal')
 
     $.support.transition && this.$element.hasClass('fade') ?
       this.$element
         .one('bsTransitionEnd', $.proxy(this.hideModal, this))
-        .emulateTransitionEnd(300) :
+        .emulateTransitionEnd(Modal.TRANSITION_DURATION) :
       this.hideModal()
   }
 
@@ -767,7 +780,9 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     $(document)
       .off('focusin.bs.modal') // guard against infinite focus loop
       .on('focusin.bs.modal', $.proxy(function (e) {
-        if (this.$element[0] !== e.target && !this.$element.has(e.target).length) {
+        if (document !== e.target &&
+            this.$element[0] !== e.target &&
+            !this.$element.has(e.target).length) {
           this.$element.trigger('focus')
         }
       }, this))
@@ -775,11 +790,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
 
   Modal.prototype.escape = function () {
     if (this.isShown && this.options.keyboard) {
-      this.$element.on('keyup.dismiss.bs.modal', $.proxy(function (e) {
+      this.$element.on('keydown.dismiss.bs.modal', $.proxy(function (e) {
         e.which == 27 && this.hide()
       }, this))
     } else if (!this.isShown) {
-      this.$element.off('keyup.dismiss.bs.modal')
+      this.$element.off('keydown.dismiss.bs.modal')
+    }
+  }
+
+  Modal.prototype.resize = function () {
+    if (this.isShown) {
+      $(window).on('resize.bs.modal', $.proxy(this.handleUpdate, this))
+    } else {
+      $(window).off('resize.bs.modal')
     }
   }
 
@@ -787,6 +810,9 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     var that = this
     this.$element.hide()
     this.backdrop(function () {
+      that.$body.removeClass('modal-open')
+      that.resetAdjustments()
+      that.resetScrollbar()
       that.$element.trigger('hidden.bs.modal')
     })
   }
@@ -803,14 +829,19 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     if (this.isShown && this.options.backdrop) {
       var doAnimate = $.support.transition && animate
 
-      this.$backdrop = $('<div class="modal-backdrop ' + animate + '" />')
+      this.$backdrop = $(document.createElement('div'))
+        .addClass('modal-backdrop ' + animate)
         .appendTo(this.$body)
 
       this.$element.on('click.dismiss.bs.modal', $.proxy(function (e) {
+        if (this.ignoreBackdropClick) {
+          this.ignoreBackdropClick = false
+          return
+        }
         if (e.target !== e.currentTarget) return
         this.options.backdrop == 'static'
-          ? this.$element[0].focus.call(this.$element[0])
-          : this.hide.call(this)
+          ? this.$element[0].focus()
+          : this.hide()
       }, this))
 
       if (doAnimate) this.$backdrop[0].offsetWidth // force reflow
@@ -822,7 +853,7 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
       doAnimate ?
         this.$backdrop
           .one('bsTransitionEnd', callback)
-          .emulateTransitionEnd(150) :
+          .emulateTransitionEnd(Modal.BACKDROP_TRANSITION_DURATION) :
         callback()
 
     } else if (!this.isShown && this.$backdrop) {
@@ -835,7 +866,7 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
       $.support.transition && this.$element.hasClass('fade') ?
         this.$backdrop
           .one('bsTransitionEnd', callbackRemove)
-          .emulateTransitionEnd(150) :
+          .emulateTransitionEnd(Modal.BACKDROP_TRANSITION_DURATION) :
         callbackRemove()
 
     } else if (callback) {
@@ -843,18 +874,46 @@ define('shim!vendor/bootstrap/js/modal[jquery=jQuery]',['jquery'], function(jQue
     }
   }
 
+  // these following methods are used to handle overflowing modals
+
+  Modal.prototype.handleUpdate = function () {
+    this.adjustDialog()
+  }
+
+  Modal.prototype.adjustDialog = function () {
+    var modalIsOverflowing = this.$element[0].scrollHeight > document.documentElement.clientHeight
+
+    this.$element.css({
+      paddingLeft:  !this.bodyIsOverflowing && modalIsOverflowing ? this.scrollbarWidth : '',
+      paddingRight: this.bodyIsOverflowing && !modalIsOverflowing ? this.scrollbarWidth : ''
+    })
+  }
+
+  Modal.prototype.resetAdjustments = function () {
+    this.$element.css({
+      paddingLeft: '',
+      paddingRight: ''
+    })
+  }
+
   Modal.prototype.checkScrollbar = function () {
-    if (document.body.clientWidth >= window.innerWidth) return
-    this.scrollbarWidth = this.scrollbarWidth || this.measureScrollbar()
+    var fullWindowWidth = window.innerWidth
+    if (!fullWindowWidth) { // workaround for missing window.innerWidth in IE8
+      var documentElementRect = document.documentElement.getBoundingClientRect()
+      fullWindowWidth = documentElementRect.right - Math.abs(documentElementRect.left)
+    }
+    this.bodyIsOverflowing = document.body.clientWidth < fullWindowWidth
+    this.scrollbarWidth = this.measureScrollbar()
   }
 
   Modal.prototype.setScrollbar = function () {
     var bodyPad = parseInt((this.$body.css('padding-right') || 0), 10)
-    if (this.scrollbarWidth) this.$body.css('padding-right', bodyPad + this.scrollbarWidth)
+    this.originalBodyPad = document.body.style.paddingRight || ''
+    if (this.bodyIsOverflowing) this.$body.css('padding-right', bodyPad + this.scrollbarWidth)
   }
 
   Modal.prototype.resetScrollbar = function () {
-    this.$body.css('padding-right', '')
+    this.$body.css('padding-right', this.originalBodyPad)
   }
 
   Modal.prototype.measureScrollbar = function () { // thx walsh
@@ -1724,9 +1783,19 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
         },
         multiShipValidation : {
             ShippingDestinations :{
-                fn: function(value, attr){
-                    var destinationErrors = [];
-                    this.parent.get('items').forEach(function(item, idx){
+              fn: function (value, attr) {
+                    var destinationErrors = [],self = this;
+                    if (!self.get("isMultiShipMode")) {
+                        var isValid = self.selectedDestination();
+                        //console.log("asdsa");
+                        self.parent.get('items').forEach(function (item, idx) {
+                            if (typeof item.attributes.destinationId == "undefined") {
+                                return destinationErrors.push({ "destinationId": Hypr.getLabel('genericRequired') });
+                            }
+                        });
+                        return (destinationErrors.length) ? destinationErrors : false;
+                    }
+                    self.parent.get('items').forEach(function (item, idx) {
                         var itemValid = item.validate();
                         if (itemValid && item.get('fulfillmentMethod') === "Ship") {
                             destinationErrors.push(itemValid);
@@ -1942,13 +2011,13 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
             var validationObj = this.validate();
 
             if (validationObj) {
-                if (validationObj) {
+               /* if (validationObj) {
                     Object.keys(validationObj.singleShippingAddess).forEach(function(key) {
                         this.trigger('error', {
                             message: validationObj.singleShippingAddess[key]
                         });
                     }, this);
-                }
+                }*/
                 return false;
             }
             return true;
@@ -2061,25 +2130,34 @@ function ($, _, Hypr, Backbone, api, HyprLiveContext, CheckoutStep, ShippingDest
         validateModel: function() {
                 this.validation = this.multiShipValidation;
                 var validationObj = this.validate();
-
                 if(this.requiresDigitalFulfillmentContact()){
                      var digitalValid = this.digitalGiftCardValid();
                      if(!digitalValid) { return false; }
                 }
-
                 if (this.requiresFulfillmentInfo() && validationObj) {
                     if (!this.isMultiShipMode() && this.getCheckout().get('destinations').nonGiftCardDestinations().length < 2) {
                         this.singleShippingAddressValid();
                         return false;
                     }
-
-                    Object.keys(validationObj.ShippingDestinations).forEach(function(key) {
+                    if (!this.get("isMultiShipMode")) {
+                        var isValid = this.selectedDestination();
+                        var errorMsgDOM = document.getElementsByClassName("shipping-contact-id")[0];
+                        if (typeof errorMsgDOM !== "undefined") {
+                            if (!isValid) {
+                               this.parent.get('destinations').singleShippingDestination().set('shippingError',true);
+                            }else{
+                               this.parent.get('destinations').singleShippingDestination().set('shippingError',false);
+                            }
+                            this.trigger('render');
+                        }
+                    }
+                    /*Object.keys(validationObj.ShippingDestinations).forEach(function(key) {
                         Object.keys(validationObj.ShippingDestinations[key]).forEach(function(keyLevel2) {
                             this.trigger('error', {
                                 message: validationObj.ShippingDestinations[key][keyLevel2]
                             });
                         }, this);
-                    }, this);
+                    }, this);*/
                     return false;
                 }
                 return true;
@@ -2311,7 +2389,9 @@ define('modules/checkout/steps/step3/models-payment',[
                 savedPaymentMethodId: {
                     fn: "validateSavedPaymentMethodId"
                 },
-
+                "contactId": {
+                    fn: "validateBillingAddress"
+                },
                 'billingContact.email': {
                     pattern: 'email',
                     msg: Hypr.getLabel('emailMissing')
@@ -2326,6 +2406,11 @@ define('modules/checkout/steps/step3/models-payment',[
                 card: PaymentMethods.CreditCardWithCVV,
                 check: PaymentMethods.Check,
                 purchaseOrder: PaymentMethods.PurchaseOrder
+            },
+            validateBillingAddress: function () {
+                var isValid = this.selectedBillingDestination();
+                if (!isValid && $('[data-mz-value="contactId"]:visible').length)
+                    return Hypr.getLabel('billingAddressRequired');
             },
             validatePaymentType: function(value, attr) {
                 var order = this.getOrder();
@@ -3401,6 +3486,7 @@ define('modules/checkout/steps/step3/models-payment',[
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -3413,6 +3499,7 @@ define('modules/checkout/steps/step3/models-payment',[
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 
@@ -4576,7 +4663,7 @@ define('modules/models-checkout',[
 
                     var legacyPWA = _.findWhere(activePayments, { paymentType: 'PayWithAmazon' });
                     if (legacyPWA) return true;
-                    
+
                     return false;
                 } else
                    return false;
@@ -4695,11 +4782,12 @@ define('modules/models-checkout',[
 
                 var validationObj = this.validate();
 
-                if (validationObj) {
+                if (validationObj) { 
+                    /*
                     Object.keys(validationObj).forEach(function(key){
                         this.trigger('error', {message: validationObj[key]});
                     }, this);
-
+                    */
                     return false;
                 }
 
@@ -4715,6 +4803,11 @@ define('modules/models-checkout',[
                     order.syncApiModel();
                     me.isLoading(true);
                     order.apiModel.getShippingMethodsFromContact().then(function (methods) {
+                        parent.unset("shippingMethodCode");
+                        order.apiModel.update({ fulfillmentInfo: parent.toJSON() })
+                        .then(function (o) {
+                            console.log("unset the shipping method");
+                        });
                         return parent.refreshShippingMethods(methods);
                     }).ensure(function () {
                         addr.set('candidateValidatedAddresses', null);
@@ -4795,7 +4888,7 @@ define('modules/models-checkout',[
                     // method to the info object itself.
                     // This can only be called after the order is loaded
                     // because the order data will impact the shipping costs.
-                    me.updateShippingMethod(me.get('shippingMethodCode'), true);
+                    //me.updateShippingMethod(me.get('shippingMethodCode'), true);
                 });
             },
             relations: {
@@ -4836,6 +4929,9 @@ define('modules/models-checkout',[
                 return this.stepStatus('complete');
             },
             updateShippingMethod: function (code, resetMessage) {
+                if(!code){
+                    code = window.checkoutViews.parentView.model.get("fulfillmentInfo").get('prevoiusSelectedMethod');
+                }
                 var available = this.get('availableShippingMethods'),
                     newMethod = _.findWhere(available, { shippingMethodCode: code }),
                     lowestValue = _.min(available, function(ob) { return ob.price; }); // Returns Infinity if no items in collection.
@@ -5935,6 +6031,7 @@ define('modules/models-checkout',[
 
                 if (this.nonStoreCreditOrGiftCardTotal() > 0 && val) {
                     // display errors:
+                    /*
                     var error = {"items":[]};
                     for (var key in val) {
                         if (val.hasOwnProperty(key)) {
@@ -5947,6 +6044,7 @@ define('modules/models-checkout',[
                     if (error.items.length > 0) {
                         order.onCheckoutError(error);
                     }
+                    */
                     return false;
                 }
 
@@ -6594,6 +6692,11 @@ define('modules/models-checkout',[
                     billingContact.set("address", null);
                 }
 
+                    if(!this.get('fulfillmentInfo').get('shippingMethodCode')){
+                        this.trigger('error',{message: Hypr.getLabel('chooseShippingMethod')});
+                        return false;
+                    }
+                    if (this.isSubmitting) return;
 
                 if (this.isSubmitting) return;
 
@@ -6617,11 +6720,11 @@ define('modules/models-checkout',[
 
                 this.isLoading(true);
 
-                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {  
+                if (isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     process.unshift(this.addNewCustomer);
                 }
 
-                
+
                 var saveCreditCard = false;
                 if (activePayments !== null && activePayments.length > 0) {
                      var creditCard = _.findWhere(activePayments, { paymentType: 'CreditCard' });
@@ -6639,10 +6742,8 @@ define('modules/models-checkout',[
                     process.push(this.addDigitalCreditToCustomerAccount);
                 }
 
-                
-                // IF not saving through paypal & has an account & has permission to save a contact (full account access| 1014) THEN
                 //save contacts
-                if ((isAuthenticated || isSavingNewCustomer) && this.hasRequiredBehavior(1014) && !this.isNonMozuCheckout()) {
+                if (!this.isNonMozuCheckout() && isAuthenticated || isSavingNewCustomer && this.hasRequiredBehavior(1014)) {
                     if (!isSameBillingShippingAddress && !isSavingCreditCard) {
                         if (requiresFulfillmentInfo) process.push(this.addShippingContact);
                         if (requiresBillingInfo) process.push(this.addBillingContact);
@@ -6656,6 +6757,7 @@ define('modules/models-checkout',[
                 process.push(/*this.finalPaymentReconcile, */this.apiCheckout);
 
                 api.steps(process).then(this.onCheckoutSuccess, this.onCheckoutError);
+                window.checkoutViews.parentView.model.get("fulfillmentInfo").unset('prevoiusSelectedMethod');
 
             },
             update: function() {
@@ -7312,46 +7414,270 @@ define('modules/views-location',['modules/jquery-mozu', 'hyprlive', 'modules/bac
         HyprLiveContext) {
 
         var positionErrorLabel = Hypr.getLabel('positionError'),
-
-            LocationsView = Backbone.MozuView.extend({
-                templateName: 'modules/location/locations',
-                initialize: function () {
+            InfoSummaryView = Backbone.MozuView.extend({
+                templateName: 'modules/location/location-infosummary',
+                initialize: function() {
                     var self = this;
-                    if (navigator.geolocation) {
-                        navigator.geolocation.getCurrentPosition(function (pos) {
-                            delete self.positionError;
-                            self.populate(pos);
-                        }, function (err) {
-                            if (err.code !== err.PERMISSION_DENIED) {
-                                self.positionError = positionErrorLabel;
-                            }
-                            self.populate();
-                        }, {
-                                timeout: 10000
-                            });
-                    } else {
-                        this.populate();
-                    }
+                    self.listenTo(self.model, 'change', self.render);
                 },
-                populate: function (location) {
-                    var self = this;
-                    var show = function () {
-                        self.render();
-                        $('.mz-locationsearch-pleasewait').fadeOut();
-                        self.$el.noFlickerFadeIn();
-                    };
-                    if (location) {
-                        this.model.apiGetByLatLong({ location: location }).then(show);
-                    } else {
-                        this.model.apiGet().then(show);
-                    }
-                },
-                getRenderContext: function () {
-                    var c = Backbone.MozuView.prototype.getRenderContext.apply(this, arguments);
-                    c.model.positionError = this.positionError;
-                    return c;
+                render: function() {
+                    Backbone.MozuView.prototype.render.apply(this);
+                    return this;
                 }
             }),
+        LocationsView = Backbone.MozuView.extend({
+              templateName: 'modules/location/locations',
+              initialize: function () {
+                  var self = this;
+                   if (navigator.geolocation) {
+                      navigator.geolocation.getCurrentPosition(function (pos) {
+                          delete self.positionError;
+                          self.populate(pos);
+                      }, function (err) {
+                          if (err.code !== err.PERMISSION_DENIED) {
+                              self.positionError = positionErrorLabel;
+                          }
+                          self.populate();
+                      }, {
+                              timeout: 10000
+                          });
+                  } else {
+                      this.populate();
+                  }
+              },
+              populate: function (location) {
+                  var self = this;
+                  var show = function () {
+                      self.render();
+                      $('.mz-locationsearch-pleasewait').fadeOut();
+                      self.$el.noFlickerFadeIn();
+                      //Get URL Param for auto search
+                      var qs = getQueryStrings();
+                      var isZipcode = qs.zipcode;
+                      var isStoreId = qs.code;
+
+                      if (isZipcode) {
+                          $("#searchTermView").val(isZipcode);
+                          $(".empty-store-container").removeClass("active");
+                          $(".search-view-container").addClass("active");
+                          $(".btn-find-stores").trigger("click");
+                          if (isZipcode === "Enter Zip") {
+                              $("#searchTermView").val("");
+                              $("#searchTermView").attr("placeholder", isZipcode);
+                          }
+                      }
+                      if (isStoreId) {
+                          // console.log(storeId);
+                          var items = window.lv.model.apiModel.data.items,
+                              lat, lng, isValid = false;
+                          for (var i = 0; i < items.length; i++) {
+                              if (isStoreId === items[i].code) {
+                                  lat = items[i].geo.lat;
+                                  lng = items[i].geo.lng;
+                                  isValid = true;
+                                  // $(".empty-store-container").removeClass("active");
+                                  // $(".search-view-container").addClass("active");
+                                  $(".pagination-wrapper").hide();
+                                  break;
+                                  //console.log(items[i], items[i].geo.lat, items[i].geo.lng);
+                              }
+                          }
+                          if (isValid) {
+                              self.loadStoreDetailPage(1, lat, lng);
+                          } else {
+                              $("#searchTermView").val("enter+zip");
+                              $(".btn-find-stores").trigger("click");
+                              $("#searchTermView").val("");
+                          }
+                      }
+                      //hide loading
+                      $(".store-locator-overlay").removeClass("active");
+                  };
+                  if (location) {
+                      this.model.apiGetByLatLong({ location: location }).then(show);
+                  } else {
+                      if (window.location.pathname.indexOf("store-details") > -1) {
+                          this.model.apiGet().then(show);
+                      } else {
+                          this.model.apiGet({ pageSize: defaults.storesPageSize }).then(show);
+                      }
+                  }
+              },
+              getRenderContext: function () {
+                  var c = Backbone.MozuView.prototype.getRenderContext.apply(this, arguments);
+                  c.model.positionError = this.positionError;
+                  return c;
+              },
+              drawMap: function (locations) {
+                  var center;
+
+                  //if no item found draw empty map
+                  if (locations.length === 0) {
+                      center = new google.maps.LatLng(defaults.googleMapLatitude, defaults.googleMapLongitude);
+                  } else {
+                      center = new google.maps.LatLng(locations[0].geo.lat, locations[0].geo.lng);
+                  }
+
+                  //google map api
+                  map = new google.maps.Map(document.getElementById('map'), {
+                      zoom: defaults.googleMapZoom,
+                      center: center,
+                      mapTypeId: google.maps.MapTypeId.ROADMAP
+                  });
+
+                  infowindow = new google.maps.InfoWindow();
+                  bounds = new google.maps.LatLngBounds();
+                  google.maps.event.addListener(map, 'click', function () {
+                      infowindow.close();
+                  });
+
+                  for (var i = 0; i < locations.length; i++) {
+                      this.createMarker(locations[i], i);
+                      this.bindMarkers(locations[i], currentMarker);
+                  }
+                  this.bindShowDetailPage();
+                  //hide loading
+                  $(".store-locator-overlay").removeClass("active");
+              },
+              createMarker: function (location, i) {
+                  marker = new google.maps.Marker({
+                      position: new google.maps.LatLng(location.geo.lat, location.geo.lng),
+                      icon: defaults.googleMapPinIcon ? defaults.googleMapPinIcon : "",
+                      title: location.description,
+                      map: map
+                  });
+                  bounds.extend(marker.position);
+                  //for marker event binding to DOM
+                  currentMarker = marker;
+                  var storeSearched = ($("#success-shops").text().length > 0) ? "hidden" : "";
+
+                  google.maps.event.addListener(marker, 'click', (function (marker, i) {
+                      return function () {
+                          var dirQueryString = [
+                              location.address.address1,
+                              location.address.address2,
+                              location.address.address2,
+                              location.address.cityOrTown,
+                              location.address.stateOrProvince,
+                              location.address.postalOrZipCode,
+                              location.address.countryCode
+                          ];
+                          location.storeSearched = storeSearched;
+                          location.dirQueryString = dirQueryString.join(" ");
+                          var saddr = (window.location.pathname.indexOf("store-details") > -1) ? '<p class="start-address-label">Start address:</p> <input type="text" name="saddr">' : '';
+                          location.saddr = saddr;
+                          location.regularHours = false;
+
+                          //Info window content DOM
+                          var view = new InfoSummaryView({ model: new Model(location) });
+                          var infoWindowDOM = view.render().el;
+
+                          //Info window content DOM END
+                          map.setCenter(marker.getPosition());
+                          infowindow.setContent(infoWindowDOM);
+                          infowindow.open(map, marker);
+                      };
+                  })(marker, i));
+
+                  map.fitBounds(bounds);
+              },
+              bindMarkers: function (location, marker) {
+                  var DOM = $("[data-marker-id='marker_" + location.code + "']");
+                  DOM.on("click", function() {
+                      $('html,body').animate({
+                        scrollTop: $('#mz-store-locator-map').offset().top
+                      }, 600);
+                      google.maps.event.trigger(marker, 'click');
+                  });
+              },
+              getGeoCode: function (zipCode, callback) {
+                  var _self = this;
+                  var geocoder = new google.maps.Geocoder();
+                  geocoder.geocode({ 'address': zipCode }, function (results, status) {
+                      if (status == google.maps.GeocoderStatus.OK) {
+                          //console.log(results);
+                          callback(results);
+                          document.getElementById("success-shops").innerHTML = "Stores near " + results[0].formatted_address;
+                          document.getElementsByClassName("invalid-location")[0].classList.add("hidden");
+                          document.getElementById("noNearbyStores").classList.add("hidden");
+                      } else {
+                          //get and render nearby stores
+                          _self.getNearbyShops(defaults.storesPageSize, 30.375321, 69.34511599999996, 0, function () {
+                              _self.drawMap(window.lv.model.apiModel.data.items);
+                              document.getElementById("noNearbyStores").classList.add("hidden");
+                              document.getElementsByClassName("invalid-location")[0].classList.remove("hidden");
+                              document.getElementsByClassName("error-success-message-container")[0].classList.remove("hidden");
+                              document.getElementById("location-list").classList.remove("hidden");
+                          });
+                      }
+                  });
+              },
+              getNearbyShops: function (pageSize, lat, lng, startIndex, callback) {
+                  //show loading
+                  $(".store-locator-overlay").addClass("active");
+                  this.model.apiGet({ pageSize: pageSize, startIndex: startIndex, filter: 'geo near(' + lat + ',' + lng + ',' + defaults.googleMapMaxNearbyDistance + ')' })
+                      .then(function (data) {
+                          if (data.length > 0) {
+                              //draw map if there is any data available
+                              if ($(".pagination-wrapper").hasClass("hidden"))
+                                  $(".pagination-wrapper").removeClass("hidden");
+                              if ($("#showLessStores").attr("data-start-index") === "0")
+                                  $("#showLessStores").addClass("hidden");
+                              if ($(".error-success-message-container").hasClass("hidden"))
+                                  $(".error-success-message-container").removeClass("hidden");
+                              if ($("#location-list").hasClass("hidden"))
+                                  $("#location-list").removeClass("hidden");
+                              //hide loading
+                              $(".store-locator-overlay").removeClass("active");
+                              $("#success-shops").show();
+                              if (data.length < pageSize) {
+                                  $(".pagination-wrapper").addClass("hidden");
+                              }
+                          } else {
+                              $(".pagination-wrapper").addClass("hidden");
+                              if ($(".error-success-message-container").hasClass("hidden"))
+                                  $(".error-success-message-container").removeClass("hidden");
+                              if ($("#location-list").hasClass("hidden"))
+                                  $("#location-list").removeClass("hidden");
+                              //hide loading
+                              $(".store-locator-overlay").removeClass("active");
+                              $("#success-shops").hide();
+                              $(".invalid-location").addClass("hidden");
+                              $("#noNearbyStores").removeClass("hidden");
+                          }
+                          callback();
+                      });
+              },
+              bindShowDetailPage: function () {
+                  var _self = this;
+                  $(".show-store-detail").on("click", function () {
+                      $(".pagination-wrapper").hide();
+                      var storeId = $(this).attr("data-store-id"),
+                          items = window.lv.model.apiModel.data.items,
+                          lat, lng, isValid = false;
+                      window.location.href = window.location.origin + "/store-details?code=" + $(this).attr("data-store-id");
+                  });
+              },
+              loadStoreDetailPage: function (pageSize, lat, lng) {
+                  var _self = this;
+                  //get and render nearby stores
+                  _self.getNearbyShops(pageSize, lat, lng, 0, function () {
+                      _self.drawMap(window.lv.model.apiModel.data.items);
+                      document.title =  window.lv.model.apiModel.data.items[0].name + " - " + Hypr.getLabel("storeTitle");
+                      $(".dir-btn-container").removeClass("hidden");
+                      $("#success-shops").text("Store Details");
+                      $("#searchTermView").val("");
+                      $(".store-details").after(socialShareWidgetTemplate.render({
+                          model: [encodeURIComponent(window.location.href)]
+                      }));
+                      $(".mz-locationlisting-locationdetails,.show-store-detail,div[data-marker-id]")
+                          .off("click");
+                      $("#location-list").removeClass("mz-locationlist");
+                      $(".mz-locationlist").addClass("store-detail");
+                      $(".search-address-container").removeClass("hidden");
+                  });
+              }
+          }),
 
             LocationsSearchView = LocationsView.extend({
                 templateName: 'modules/location/location-search',
@@ -7394,6 +7720,45 @@ define('modules/views-location',['modules/jquery-mozu', 'hyprlive', 'modules/bac
                 }
             });
 
+            var Model = Backbone.MozuModel.extend();
+
+            var map,
+                google = window.google || {},
+                infowindow,
+                bounds,
+                marker,
+                currentMarker,
+                socialShareWidgetTemplate = Hypr.getTemplate('modules/location/social-share-widget');
+
+            function getQueryStrings() {
+                var assoc = {};
+                var decode = function (s) { return decodeURIComponent(s.replace(/\+/g, " ")); };
+                var queryString = location.search.substring(1);
+                var keyValues = queryString.split('&');
+
+                for (var i in keyValues) {
+                    var key = keyValues[i].split('=');
+                    if (key.length > 1) {
+                        assoc[decode(key[0])] = decode(key[1]);
+                    }
+                }
+
+                return assoc;
+            }
+            var defaults = {
+                googleMapAPIKey: Hypr.getThemeSetting('googleMapAPIKey'),
+                googleMapLatitude: Hypr.getThemeSetting('googleMapLatitude'),
+                googleMapLongitude: Hypr.getThemeSetting('googleMapLongitude'),
+                googleMapZoom: Hypr.getThemeSetting('googleMapZoom'),
+                googleMapPinIcon: Hypr.getThemeSetting('googleMapPinIcon'),
+                storesPageSize: Hypr.getThemeSetting('storesPageSize'),
+                googleMapMaxNearbyDistance: Hypr.getThemeSetting('googleMapMaxNearbyDistance')
+            };
+            try {
+                defaults.googleMapZoom = parseInt(defaults.googleMapZoom, 10);
+            } catch (e) { }
+
+
         return {
             LocationsView: LocationsView,
             LocationsSearchView: LocationsSearchView
@@ -7401,14 +7766,29 @@ define('modules/views-location',['modules/jquery-mozu', 'hyprlive', 'modules/bac
     }
 );
 
-define('modules/views-productimages',['modules/jquery-mozu', 'underscore', "modules/backbone-mozu", 'hyprlive'], function ($, _, Backbone, Hypr) {
+define('modules/views-productimages',['modules/jquery-mozu', 'underscore', "modules/backbone-mozu", 'hyprlive', "hyprlivecontext"], function($, _, Backbone, Hypr, HyprLiveContext) {
+
+    var width_thumb = HyprLiveContext.locals.themeSettings.maxProductImageThumbnailSize;
+    var width_pdp = HyprLiveContext.locals.themeSettings.productImagePdpMaxWidth;
+    var width_zoom = HyprLiveContext.locals.themeSettings.productZoomImageMaxWidth;
+
+    //using GET request CheckImage function checks whether an image exist or not
+    var checkImage = function(imagepath, callback) {
+        $.get(imagepath).done(function() {
+            callback(true); //return true if image exist
+        }).error(function() {
+            callback(false);
+        });
+    };
 
     var ProductPageImagesView = Backbone.MozuView.extend({
         templateName: 'modules/product/product-images',
         events: {
+            'mouseenter [data-mz-productimage-thumb]': 'onMouseEnterChangeThumbImage',
+            'mouseleave [data-mz-productimage-thumb]': 'onMouseLeaveResetThumbImage',
             'click [data-mz-productimage-thumb]': 'switchImage'
         },
-        initialize: function () {
+        initialize: function() {
             // preload images
             var self = this;
             self.model.on("change:productImages", function(model, images){
@@ -7419,14 +7799,14 @@ define('modules/views-productimages',['modules/jquery-mozu', 'underscore', "modu
                     self.selectedImageIx = images[0].sequence;
                     self.updateMainImage();
                 }
-                
+
             });
             self.initImages();
         },
         initImages: function(images){
             var imageCache = this.imageCache = {},
                 cacheKey = Hypr.engine.options.locals.siteContext.generalSettings.cdnCacheBustKey;
-                
+
                 images = images || [];
 
                 if(!images.length) {
@@ -7435,34 +7815,64 @@ define('modules/views-productimages',['modules/jquery-mozu', 'underscore', "modu
 
             _.each(images, function (img) {
                 var i = new Image();
-                i.src = img.imageUrl + '?max=' + Hypr.getThemeSetting('productImagesContainerWidth') + '&_mzCb=' + cacheKey;
+                i.src = img.imageUrl + '?maxWidth=' + Hypr.getThemeSetting('productImagePdpMaxWidth') + '&_mzCb=' + cacheKey;
+                i.zoomsrc = img.imageUrl + '?maxWidth=' + Hypr.getThemeSetting('productZoomImageMaxWidth') + '&_mzCb=' + cacheKey;
                 if (img.altText) {
                     i.alt = img.altText;
-                    i.title = img.altText;
                 }
                 imageCache[img.sequence.toString()] = i;
             });
         },
-        clearImageCache: function(){
-            this.imageCache = {};
+        onMouseEnterChangeThumbImage: function(_e){
+            var img_url = $(_e.currentTarget).find('img').attr('src');
+            img_url = img_url.replace('maxWidth='+width_thumb, 'maxWidth='+width_pdp);
+            this.mainImage = $('.mz-productimages-mainimage').attr('src');
+            checkImage(img_url, function(response) {
+                if (response) {
+                    $('.mz-productimages-mainimage').attr('src', img_url);
+                }
+            });
         },
-        switchImage: function (e) {
-            var $thumb = $(e.currentTarget);
-            this.selectedImageIx = $thumb.data('mz-productimage-thumb');
+        onMouseLeaveResetThumbImage: function(_e){
+            var img_url = $('.mz-productimages-mainimage').data('zoom-image').replace('maxWidth='+width_zoom, 'maxWidth='+width_pdp);
+            checkImage(img_url, function(response) {
+                if (response) {
+                    $('.mz-productimages-mainimage').attr('src', img_url);
+                }
+            });
+        },
+        switchImage: function(e) {
+            $(e.currentTarget).parents("ul").find("li").removeClass("active");
+            $(e.currentTarget).addClass("active");
+
+            var $thumb = $(e.currentTarget).find('img');
+            this.selectedMainImageSrc = $thumb.attr('src');
+            this.selectedMainImageAltText = $thumb.attr('alt');
+            this.selectedImageIx = $(e.currentTarget).data('mz-productimage-thumb');
             this.updateMainImage();
             return false;
         },
-        updateMainImage: function () {
-            if (this.imageCache[this.selectedImageIx]) {
-                this.$('[data-mz-productimage-main]')
-                    .prop('src', this.imageCache[this.selectedImageIx].src)
-                    .prop('title', this.imageCache[this.selectedImageIx].title)
-                    .prop('alt', this.imageCache[this.selectedImageIx].alt);
-            }
+        clearImageCache: function(){
+            this.imageCache = {};
         },
-        render: function () {
-            Backbone.MozuView.prototype.render.apply(this, arguments);
-            this.updateMainImage();
+        updateMainImage: function() {
+            var self = this;
+            if (!$('#zoom').length) {
+                $('.mz-productimages-main').html('<img class="mz-productimages-mainimage" data-mz-productimage-main="" id="zoom" itemprop="image">');
+            }
+            checkImage(this.selectedMainImageSrc.replace('maxWidth='+width_thumb, 'maxWidth=' + Hypr.getThemeSetting('productImagePdpMaxWidth')), function(response) {
+                if (response) {
+                    self.$('#zoom')
+                        .prop('src', self.selectedMainImageSrc.replace('maxWidth='+width_thumb, 'maxWidth=' + Hypr.getThemeSetting('productImagePdpMaxWidth')))
+                        .prop('alt', self.selectedMainImageAltText);
+                    $('.zoomContainer').remove();
+                    $('#zoom').removeData('elevateZoom').data('zoom-image', self.selectedMainImageSrc.replace('maxWidth='+width_thumb, 'maxWidth=' + Hypr.getThemeSetting('productZoomImageMaxWidth'))).elevateZoom({ zoomType: "inner", cursor: "crosshair", responsive: true });
+                 }
+            });
+        },
+        render: function() {
+            //Backbone.MozuView.prototype.render.apply(this, arguments);
+            //this.updateMainImage();
         }
     });
 
@@ -7472,6 +7882,7 @@ define('modules/views-productimages',['modules/jquery-mozu', 'underscore', "modu
     };
 
 });
+
 define('modules/dropdown',["modules/jquery-mozu"], function ($) {
 
     var Dropdown = function(){
@@ -7541,7 +7952,7 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                 });
                 self._productStepView = addProductStepView;
                 addProductStepView.render();
-            }  
+            }
         }
     });
 
@@ -7574,9 +7985,9 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                 return true;
             });
         });
-        return filteredVriations;     
+        return filteredVriations;
     };
-    
+
     var hasOtherOptions = function(variation, options, selectedOptionsMap){
         var newTestVariationList = [];
         _.each(options, function(optionVariations, idx){
@@ -7607,18 +8018,18 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
             var variationOptionMap = _.map(variationsToMark, function(variation){
                 var option = _.findWhere(variation.options, {attributeFQN: optionName});
                 if(option) return option.value;
-                
+
             });
-            
+
             o.get('values').forEach(function(opt){
                 var hasOption = -1;
-                
+
                 if( o.get('attributeFQN') === optionName) {
                     opt.isEnabled = false;
                     hasOption = variationOptionMap.indexOf(opt.value);
 
                     if(hasOption != -1) {
-                        opt.isEnabled = true; 
+                        opt.isEnabled = true;
                     } else {
                         if(o.get('value') === opt.value && selectedOptionsMap.get('attributeFQN') !== o.get('attributeFQN')) {
                             clearSelectedOption = true;
@@ -7628,7 +8039,7 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
             });
             if (clearSelectedOption) {
                 o.set('value', "");
-                reRunForSelected = true; 
+                reRunForSelected = true;
             }
         });
         return reRunForSelected;
@@ -7700,7 +8111,7 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                         markEnabledConfigOptions.call(this, selectedOptionsMap);
                     }
                 }
-                
+
                 Backbone.MozuView.prototype.render.apply(this);
                 this.$('[data-mz-is-datepicker]').each(function (ix, dp) {
                     $(dp).dateinput().css('color', Hypr.getThemeSetting('textColor')).on('change  blur', _.bind(me.onOptionChange, me));
@@ -7739,11 +8150,11 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                 var oldValue = option.get('value');
                 if (oldValue !== value && !(oldValue === undefined && value === '')) {
                     option.set('value', value);
-                    
+
                     if(option.get('attributeDetail').usageType !== 'Extra') {
                         markEnabledConfigOptions.call(this, option);
                     }
-            
+
                     this.oldOptions = this.model.get('options').toJSON();
                     this.postponeRender = true;
                 }
@@ -7764,11 +8175,11 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                     oldValue = option.get('value');
                     if (oldValue !== newValue && !(oldValue === undefined && newValue === '')) {
                         option.set('value', newValue);
-                        
+
                         if(option.get('attributeDetail').usageType !== 'Extra') {
                             markEnabledConfigOptions.call(this, option);
                         }
-                
+
                         this.oldOptions = this.model.get('options').toJSON();
                         this.postponeRender = true;
                     }
@@ -7873,7 +8284,7 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
             window.cartView.cartView.model.set('discountId', self.model.get('discount').get('discountId'));
             window.cartView.cartView.model.apiRejectSuggestedDiscount();
             this.render();
-            
+
         },
         setInit: function (updatingItemId){
             var self = this;
@@ -7894,9 +8305,9 @@ define('modules/cart/discount-dialog/views-discount-dialog',['modules/backbone-m
                 });
             } else {
                 this.model.trigger('dialogCancel');
-                window.cartView.cartView.model.fetch().then(function () {
+              /*  window.cartView.cartView.model.fetch().then(function () {
                     window.cartView.cartView.render();
-                });
+                });*/
                 this.bootstrapInstance.hide();
             }
         },
@@ -8071,8 +8482,9 @@ define('pages/cart',['modules/api',
         'modules/applepay',
         'modules/cart/discount-dialog/views-discount-dialog',
         'modules/models-discount',
-        'modules/message-handler'
-], function (api, Backbone, _, $, CartModels, CartMonitor, HyprLiveContext, Hypr, preserveElement, modalDialog, paypal, LocationModels, AmazonPay, ApplePay, DiscountModalView, Discount, MessageHandler) {
+        'modules/message-handler',
+        'modules/metrics'
+], function (api, Backbone, _, $, CartModels, CartMonitor, HyprLiveContext, Hypr, preserveElement, modalDialog, paypal, LocationModels, AmazonPay, ApplePay, DiscountModalView, Discount, MessageHandler, MetricsEngine) {
 
     var ThresholdMessageView = Backbone.MozuView.extend({
       templateName: 'modules/cart/cart-discount-threshold-messages'
@@ -8124,7 +8536,7 @@ define('pages/cart',['modules/api',
             preserveElement(this, ['.v-button', '.p-button', '#AmazonPayButton', '#applePayButton'], function() {
                 Backbone.MozuView.prototype.render.call(this);
             });
-            // normally we preserveElement on the apple pay button, but we hide it if a change to the cart
+            // normally we preserveElement on the apple pay button, but we hide it if a change to the cart 
             // has lead the total price to be $0. Apple doesn't like $0 orders
             if (ApplePay && ApplePay.scriptLoaded) ApplePay.hideOrShowButton();
             // this.messageView.render();
@@ -8149,8 +8561,7 @@ define('pages/cart',['modules/api',
                 this.render();
             }
         },
-        removeItem: _.debounce(function(e) {
-            var self = this;
+        removeItem: function(e) {
             if(require.mozuData('pagecontext').isEditMode) {
                 // 65954
                 // Prevents removal of test product while in editmode
@@ -8158,16 +8569,10 @@ define('pages/cart',['modules/api',
                 return false;
             }
             var $removeButton = $(e.currentTarget);
-            var $allRemoveButtons = $('[data-mz-action="login"]');
             var id = $removeButton.data('mz-cart-item');
-            this.model.isLoading(true);
-            $allRemoveButtons.addClass('is-disabled');
-            this.model.removeItem(id).ensure(function(){
-                  self.model.isLoading(false);
-                  $allRemoveButtons.removeClass('is-disabled');
-            });
+            this.model.removeItem(id);
             return false;
-        }, 500),
+        },
         updateAutoAddItem: function(e) {
             var self = this;
             var $target = $(e.currentTarget);
@@ -8489,14 +8894,17 @@ define('pages/cart',['modules/api',
                 })
 
             };
-
+ 
         cartModel.on('ordercreated', function (order) {
             cartModel.isLoading(true);
             window.location = (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + '/checkout/' + order.prop('id');
         });
 
         cartModel.on('sync', function() {
-            CartMonitor.setCount(cartModel.count());
+             if (this.isEmpty())
+                window.location.reload();
+            else
+                CartMonitor.update();
         });
 
         window.cartView = cartViews;
@@ -8505,7 +8913,7 @@ define('pages/cart',['modules/api',
 
         cartViews.cartView.render();
         //if (cartModel.get('discountModal').get('discounts').length) {
-            cartViews.discountModalView.render();
+            cartViews.discountModalView.render(); 
         //}
         renderVisaCheckout(cartModel);
 

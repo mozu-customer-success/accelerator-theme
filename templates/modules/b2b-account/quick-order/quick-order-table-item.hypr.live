@@ -13,12 +13,12 @@
 {% endblock price %}
 {% block quantity %}
 <td class="mz-carttable-item-qty">
-    <input class="mz-carttable-qty-field" type="number" min="1" {% if model.isLoading %}disabled="disabled"{% endif %} data-mz-index="{{ index }}" data-mz-value="quantity" value="{{ item.quantity }}" />
+    <input class="mz-carttable-qty-field" type="number" min="1" {% if model.isLoading %}disabled="disabled"{% endif %} data-mz-index="{{ index }}" data-mz-value="quantity" value="{{ item.quantity }}" aria-label="Quick Order Quantity" />
 </td>
 {% endblock quantity %}
 {% block removeItem %}
 <td class="mz-carttable-item-remove">
-  <a href="javascript:;" data-mz-action="removeItem" data-mz-index="{{ index }}" class="mz-icon mz-icon-close">{{ labels.remove }}</a>
+  <a class="mz-icon mz-icon-close" href="javascript:;" data-mz-action="removeItem" data-mz-index="{{ index }}" title="Remove Item" aria-label="Remove Item">{{ labels.remove }}</a>
 </td>
 {% endblock removeItem %}
 {% block errormessages %}

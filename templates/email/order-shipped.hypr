@@ -40,7 +40,7 @@
                         {% if packageItem.product.productUsage == 'Bundle' %}
                         <dl class="mz-propertylist">
                         {% for bundledProduct in packageItem.product.bundledProducts %}
-                        <dt>{{ bundledProduct.productCode }}</dt>&nbsp;
+                        <dt>{{ bundledProduct.productCode }}</dt>
                         <dd>{{ bundledProduct.name }} ({{ bundledProduct.quantity }})</dd>
                         {% endfor %}
                         </dl>

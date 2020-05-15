@@ -67,7 +67,7 @@ define(['modules/api',
             preserveElement(this, ['.v-button', '.p-button', '#AmazonPayButton', '#applePayButton'], function() {
                 Backbone.MozuView.prototype.render.call(this);
             });
-            // normally we preserveElement on the apple pay button, but we hide it if a change to the cart
+            // normally we preserveElement on the apple pay button, but we hide it if a change to the cart 
             // has lead the total price to be $0. Apple doesn't like $0 orders
             if (ApplePay && ApplePay.scriptLoaded) ApplePay.hideOrShowButton();
             // this.messageView.render();
@@ -92,8 +92,7 @@ define(['modules/api',
                 this.render();
             }
         },
-        removeItem: _.debounce(function(e) {
-            var self = this;
+        removeItem: function(e) {
             if(require.mozuData('pagecontext').isEditMode) {
                 // 65954
                 // Prevents removal of test product while in editmode
@@ -101,16 +100,10 @@ define(['modules/api',
                 return false;
             }
             var $removeButton = $(e.currentTarget);
-            var $allRemoveButtons = $('[data-mz-action="login"]');
             var id = $removeButton.data('mz-cart-item');
-            this.model.isLoading(true);
-            $allRemoveButtons.addClass('is-disabled');
-            this.model.removeItem(id).ensure(function(){
-                  self.model.isLoading(false);
-                  $allRemoveButtons.removeClass('is-disabled');
-            });
+            this.model.removeItem(id);
             return false;
-        }, 500),
+        },
         updateAutoAddItem: function(e) {
             var self = this;
             var $target = $(e.currentTarget);
@@ -432,14 +425,17 @@ define(['modules/api',
                 })
 
             };
-
+ 
         cartModel.on('ordercreated', function (order) {
             cartModel.isLoading(true);
             window.location = (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + '/checkout/' + order.prop('id');
         });
 
         cartModel.on('sync', function() {
-            CartMonitor.setCount(cartModel.count());
+             if (this.isEmpty())
+                window.location.reload();
+            else
+                CartMonitor.update();
         });
 
         window.cartView = cartViews;
@@ -448,7 +444,7 @@ define(['modules/api',
 
         cartViews.cartView.render();
         //if (cartModel.get('discountModal').get('discounts').length) {
-            cartViews.discountModalView.render();
+            cartViews.discountModalView.render(); 
         //}
         renderVisaCheckout(cartModel);
 

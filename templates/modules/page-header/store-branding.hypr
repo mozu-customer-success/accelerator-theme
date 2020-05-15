@@ -1,3 +1,16 @@
-﻿    <h1 class="mz-storebranding" id="store-branding">
-        <a href="{{siteContext.siteSubdirectory}}/" title="{{ siteContext.generalSettings.websiteName }}">{{ siteContext.generalSettings.websiteName }}</a>
-    </h1>
+{% if themeSettings.globalPageHeaderLogoSM or themeSettings.globalPageHeaderLogoXS %}
+	<a class="{% if not themeSettings.globalPageHeaderLogoSM %}logo {% endif %}hidden-xs" href="/" alt="Store logo" title="{{ siteContext.generalSettings.websiteName }}">
+	{% if themeSettings.globalPageHeaderLogoSM %}
+		<img class="customLogo" src="{{ themeSettings.globalPageHeaderLogoSM.imageUrl }}" />
+	{% endif %}
+	</a>
+	<a class="{% if not themeSettings.globalPageHeaderLogoXS %}logo {% endif %}hidden-sm hidden-md hidden-lg" href="/" title="{{ siteContext.generalSettings.websiteName }}">
+	{% if themeSettings.globalPageHeaderLogoXS %}
+		<img class="customLogo" src="{{ themeSettings.globalPageHeaderLogoXS.imageUrl }}" alt="Store logo"/>
+	{% endif %}
+	</a>
+{% else %}
+	<a class="{% if not themeSettings.globalPageHeaderLogoSM %}logo {% endif %}hidden-xs" href="/" title="{{ siteContext.generalSettings.websiteName }}">
+		<img class="defaultLogo" src="/resources/images/logo-sm.png" alt="Store logo"/>
+	</a>
+{% endif %}

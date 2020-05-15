@@ -78,7 +78,7 @@
 }
 
 .mz-checkoutform {
-    padding-left: @gutter/2;
+    padding: 10px;
     box-sizing: border-box;
     label {
       cursor: default;
@@ -102,7 +102,7 @@
 }
 
 .mz-checkoutform-shipping {
-  padding-top: @gutter/4;
+  padding-top: @gutter - 10;
     display: block;
 }
 
@@ -174,6 +174,7 @@
     padding: 0 0 @gutter/8;
     font-size: @fontSizeLarger;
     border-bottom: none;
+    font-weight: bold;
 }
 
 .mz-shipping-method-address{
@@ -223,4 +224,109 @@
             vertical-align: middle;
         }
     }
+}
+
+.mz-checkoutform-shippingaddress, .mz-contact-dialog {
+    .mz-checkoutform-header{
+        margin-bottom: 0px;
+    }
+    .mz-addresssummary{
+        margin-top: 8px;
+        span{
+            padding-top: 5px;
+            display: block;
+        }
+    }
+    .mz-l-formfieldgroup-row {
+        display: block;
+    }
+    .mz-l-formfieldgroup-cell{
+        display: block;
+        padding-bottom: 0px;
+        margin-bottom: 9px;
+        .mz-contactselector{
+            background-color: @colorWhite;
+        }
+        label{
+            text-align: left;
+            font-size: @fontSize;
+        }
+        input[type="text"], input{
+            width: 240px;
+            border: 1px solid @inputBorder;
+        }
+        .text-input, select{
+            width: 240px;
+            background-color: @colorWhite;
+            .border-radius-plain(0);
+        }
+    }
+    .mz-contactselector{
+        .mz-contactselector-contact{
+            display: block;
+        }
+    } 
+}
+.mz-checkoutform-paymentinfo{
+    .mz-l-formfieldgroup-row{
+        display: block;
+        &.mz-payment-credit-card-savepayment-row{
+            margin-left: 0px;
+        }
+        .mz-l-formfieldgroup-cell{
+            display: block;
+            label{
+                text-align: left;
+                font-size: @fontSize;
+                line-height: 18px;
+                &.mz-inline{
+                    display: inline-block;
+                    font-size: @fontSize;
+                    .fontRegular();
+                    margin-left: 3px;
+                }
+            }
+            
+            input[type="text"]{
+                width: 240px;
+                border: 1px solid @inputBorder;
+            }
+            .text-input, #mz-payment-credit-card-type{
+                width: 240px;
+                background-color: @colorWhite;
+            }
+            .mz-l-formfieldgroup-halfsize{
+                width: 114px;
+                background-color: @colorWhite;
+            }
+            select {
+                background-color: @colorWhite;
+                margin-bottom: 3px;
+            }
+        }
+    }
+    .mz-checkout-digitalcredit{
+        .mz-l-formfieldgroup-cell{
+            input[type="text"]{
+                width: 240px;
+                border: 1px solid @inputBorder;
+                margin-bottom: 0px;
+            }
+        }
+    }
+    &.is-loading{
+        .mz-checkout-digitalcredit{
+            .mz-l-formfieldgroup-cell{
+                .mz-button{
+                    background-image: none;
+                    animation: none;
+                    background-size: 0;
+                    opacity: 0.5;
+                }
+            }
+        }
+    }
+}
+.mz-l-formfieldgroup-full{
+      display: block;
 }

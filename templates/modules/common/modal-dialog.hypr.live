@@ -4,7 +4,7 @@
       <div class="modal-header">
       {% block modal-header %}
         <button type="button" class="close" aria-hidden="true" data-mz-action="handleDialogClose">×</button>
-        <h4 class="modal-title"></h4>
+        <h4 class="modal-title">{{labels.addNewContact}}</h4>
       {% endblock modal-header %}
       </div>
       <div class="modal-body">
@@ -19,4 +19,4 @@
       </div>
     </div><!-- /.modal-content -->
   </div><!-- /.modal-dialog -->
-<!-- </div><!-- /.modal -->
+<!-- </div> /.modal -->

@@ -8,7 +8,7 @@
 <div class="mz-b2b-payment">
 {% if model.hasSavedCards or editing.card == "new" or model.purchaseOrder and model.purchaseOrder.isEnabled %}
 <div class="mz-accountpaymentmethods">
-<ul class="mz-accountpaymentmethods-list mz-l-tiles">
+<div class="mz-accountpaymentmethods-list mz-l-tiles">
     {% if model.purchaseOrder and model.purchaseOrder.isEnabled and siteContext.checkoutSettings.purchaseOrder.isEnabled %}
         {% include "modules/my-account/my-account-paymentmethod" with model=model.purchaseOrder blockCreditLimit=model.blockCreditLimit hasRequiredBehavior=model.hasRequiredBehavior %}
     {% endif %}
@@ -23,7 +23,7 @@
     {% if editing.card == "new" %}
         {% include "modules/my-account/my-account-credit-card-form" with model=model.editingCard editingContact=model.editingContact %}
     {% endif %}
-</ul>
+</div>
 </div>
 {% else %}
     <p class="mz-accountpaymentmethods-empty">{{ labels.noSavedCards }} 

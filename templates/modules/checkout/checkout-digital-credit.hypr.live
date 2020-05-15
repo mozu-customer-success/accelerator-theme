@@ -1,8 +1,8 @@
 ﻿<div class="mz-checkout-digitalcredit mz-l-stack-section">
   <h4 class="mz-checkoutform-title">{{ labels.digitalCredits }}</h4>
   <div class="mz-l-formfieldgroup-cell">
-    <input type="text" id="digital-credit-code" name="digital-credit-code" class="mz-checkout-digitalcredit-enter-code" value="{{ model.digitalCreditCode }}" data-mz-value="digitalCreditCode" autocomplete="off" />
-    <button class="mz-button" data-mz-action="getDigitalCredit" {% if not model.digitalCreditCode %} disabled="disabled" {% endif %}>{{ labels.apply }}</button>
+    <input type="text" class="mz-checkout-digitalcredit-enter-code digital-credit-code" name="digital-credit-code" value="{{ model.digitalCreditCode }}" data-mz-value="digitalCreditCode" autocomplete="off" maxlength="{{themeSettings.creditCardNumberLength}}" title="Digital Credit Code" aria-label="Digital Credit Code" />
+    <button class="mz-button primary-btn" data-mz-action="getDigitalCredit" {% if not model.digitalCreditCode %} disabled="disabled" {% endif %} title="Apply Digital Credit Code" aria-label="Apply Digital Credit Code">{{ labels.apply }}</button>
   </div>
 
   {% if model.availableDigitalCredits %}

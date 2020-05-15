@@ -1,7 +1,18 @@
-﻿define(['modules/backbone-mozu', 'underscore', 'modules/models-address', 'modules/models-orders', 'modules/models-paymentmethods', 'modules/models-product', 'modules/models-returns', 'hyprlive', 'modules/models-b2b-account'], function (Backbone, _, AddressModels, OrderModels, PaymentMethods, ProductModels, ReturnModels, Hypr, B2BAccountModels) {
+﻿define(['modules/backbone-mozu',
+        'underscore',
+        'modules/models-address',
+        'modules/models-orders',
+        'modules/models-paymentmethods',
+        'modules/models-product',
+        'modules/models-returns',
+        'hyprlive',
+        'hyprlivecontext',
+        'modules/block-ui',
+        'modules/backbone-mozu',
+        'modules/models-b2b-account'],
+function (Backbone, _, AddressModels, OrderModels, PaymentMethods, ProductModels, ReturnModels, Hypr,HyprLiveContext,blockUiLoader,$, B2BAccountModels) {
 
-
-    var pageContext = require.mozuData('pagecontext'),
+  var pageContext = require.mozuData('pagecontext'),
         validShippingCountryCodes,
         validBillingCountryCodes,
         validShippingAndBillingCountryCodes;
@@ -79,7 +90,7 @@
         mozuType: 'contact',
         requiredBehaviors: [1002],
         defaults: {
-            userId: require.mozuData('user').userId  
+            userId: require.mozuData('user').userId
         },
         relations: {
             address: AddressModels.StreetAddress,
@@ -185,6 +196,101 @@
             if (types) this.setTypeHelpers(null, types);
             this.on(contactTypeListeners);
             this.on('change:types', this.setTypeHelpers, this);
+        },
+        requestCatalog: function (options) {
+            var self = this,
+                editingContact = this,
+                apiContact;
+
+            if (options && options.forceIsValid) {
+                editingContact.set('address.isValidated', true);
+            }
+            var result = this.validate();
+
+            if (!this.validate()) {
+                var apiData = require.mozuData('apicontext');
+                var payload = {
+                    phone1: this.get('phoneNumbers.office') || '',
+                    phone2: this.get('phoneNumbers.home') || '',
+                    email: this.get('email') || '',
+                    dateCreated: (new Date()),
+                    firstName: this.get('firstName') || '',
+                    middleName: this.get('middleNameInitials') || '',
+                    lastName: this.get('lastNameOrSurname') || '',
+                    address1: this.get('address.address1') || '',
+                    address2: this.get('address.address2') || '',
+                    city: this.get('address.cityOrTown') || '',
+                    zipCode: this.get('address.postalOrZipCode') || '',
+                    state: this.get('address.stateOrProvince') || '',
+                    country: this.get('address.countryCode') || '',
+                    exportedDate: ''
+                };
+                var isMarketingEnabled = this.get('marketingEnabled') ? true : false;
+                var user = require.mozuData('user');
+                if (!user.isAnonymous) {
+                    payload.customerId = user.accountId;
+                    if(isMarketingEnabled){
+                        $.ajax({
+                            url: '/api/commerce/customer/accounts/'+user.accountId,
+                            headers: apiData.headers,
+                            method: 'GET',
+                            success: function(data) {
+                                if(!data.acceptsMarketing){
+                                    data.acceptsMarketing=true;
+                                    $.ajax({
+                                        url: '/api/commerce/customer/accounts/'+user.accountId,
+                                        headers: apiData.headers,
+                                        method: 'PUT',
+                                        data:data
+                                    });
+
+                                }
+                            }
+                        });
+                    }
+                    return $.ajax({
+                        url: '/api/platform/entitylists/requestCatalog%40ng/entities/?responseFields=',
+                        dataType: "json",
+                        contentType: "application/json; charset=utf-8",
+                        data: JSON.stringify(payload),
+                        method: 'POST',
+                        headers: apiData.headers
+                    });
+                } else {
+                    //create a new guest user and assign its guest ID
+                    var dfd = $.$.Deferred();
+                    $.ajax({
+                        url: '/api/commerce/customer/accounts',
+                        data: {
+                            firstName: payload.firstName,
+                            lastName: payload.lastName,
+                            acceptsMarketing: isMarketingEnabled,
+                            emailAddress: payload.email,
+                            isAnonymous: true
+                        },
+                        headers: apiData.headers,
+                        method: 'POST'
+                    }).then(function(response) {
+                        payload.customerId = response.id;
+                        $.ajax({
+                            url: '/api/platform/entitylists/requestCatalog%40ng/entities/?responseFields=',
+                            dataType: "json",
+                            contentType: "application/json; charset=utf-8",
+                            data: JSON.stringify(payload),
+                            method: 'POST',
+                            headers: apiData.headers,
+                            success:function(data){
+                                dfd.resolve(data);
+                            }
+                        });
+                    }, function(error) {
+                        //console.log("Show API error", error);
+                    });
+                    // Return the Promise so caller can't change the Deferred
+                    return dfd.promise();
+
+                }
+            }
         }
     }),
 
@@ -479,27 +585,99 @@
                 this.get('editingContact').set(toEdit.toJSON({ helpers: true, ensureCopy: true }), { silent: true });
         },
         endEditContact: function() {
-            var editingContact = this.get('editingContact');
+            var editingContact = this.get('editingContact'),
+            addressType = editingContact.get("address").get('addressType'),
+            countryCode = editingContact.get("address").get('countryCode');
             editingContact.clear();
             editingContact.set('accountId', this.get('id'));
+            editingContact.get("address").set('addressType',addressType);
+            editingContact.get("address").set('countryCode', countryCode);
+            editingContact.get("address").set('candidateValidatedAddresses', null);
         },
         saveContact: function (options) {
             var self = this,
                 editingContact = this.get('editingContact'),
-                apiContact;
-
-            if (options && options.forceIsValid) {
-                editingContact.set('address.isValidated', true);
-            }
-
-            var op = editingContact.save();
-            if (op) return op.then(function (contact) {
-                apiContact = contact;
-                self.endEditContact();
-                return self.getContacts();
-            }).then(function () {
-                return apiContact;
-            });
+                apiContact,
+                isAddressValidationEnabled = HyprLiveContext.locals.siteContext.generalSettings.isAddressValidationEnabled,
+                allowInvalidAddresses = HyprLiveContext.locals.siteContext.generalSettings.allowInvalidAddresses,
+                addr = editingContact.get("address");
+            if (!this.validate("editingContact")) {
+                if(isAddressValidationEnabled && !addr.get('isValidated')){
+                    if(typeof(addr.apiModel.data.address1) === "undefined"){
+                        addr.apiModel.data = addr.attributes;
+                    }
+                    if (!addr.get('candidateValidatedAddresses')) {
+                        var methodToUse = allowInvalidAddresses ? 'validateAddressLenient' : 'validateAddress';
+                        addr.apiModel[methodToUse]().then(function (resp) {
+                            if (resp.data && resp.data.addressCandidates && resp.data.addressCandidates.length) {
+                                if (_.find(resp.data.addressCandidates, addr.is, addr)) {
+                                    if(options.editingView)
+                                        options.editingView.editing.contact = false;
+                                    addr.set('isValidated', true);
+                                    var op = editingContact.save();
+                                    if (op) return op.then(function (contact) {
+                                        apiContact = contact;
+                                        self.endEditContact();
+                                        return self.getContacts();
+                                    }).then(function () {
+                                        blockUiLoader.unblockUi();
+                                        return apiContact;
+                                    });
+                                }
+                                else{
+                                    addr.set('candidateValidatedAddresses', resp.data.addressCandidates);
+                                    blockUiLoader.unblockUi();
+                                }
+                            }
+                        }, function (e) {
+                            if(allowInvalidAddresses){
+                                if(options.editingView)
+                                    options.editingView.editing.contact = false;
+                                editingContact.set('address.isValidated', true);
+                                var op = editingContact.save();
+                                if (op) return op.then(function(contact) {
+                                    apiContact = contact;
+                                    self.endEditContact();
+                                    return self.getContacts();
+                                }).then(function() {
+                                    blockUiLoader.unblockUi();
+                                    return apiContact;
+                                });
+                            }else{
+                                self.trigger('error', {message: Hypr.getLabel('addressValidationError')});
+                            }
+                            blockUiLoader.unblockUi();
+                        });
+                    }else{
+                        /*self.trigger('error', {message: Hypr.getLabel('addressValidationError')});
+                        blockUiLoader.unblockUi();
+                        return false;*/
+                        if(options.editingView)
+                            options.editingView.editing.contact = false;
+                        editingContact.set('address.isValidated', true);
+                        var opsData = editingContact.save();
+                        if (opsData) return opsData.then(function(contact) {
+                            apiContact = contact;
+                            self.endEditContact();
+                            return self.getContacts();
+                        }).then(function() {
+                            blockUiLoader.unblockUi();
+                            return apiContact;
+                        });
+                    }
+                } else {
+                    editingContact.set('address.isValidated', true);
+                    var op = editingContact.save();
+                    if (op) return op.then(function(contact) {
+                        apiContact = contact;
+                        self.endEditContact();
+                        return self.getContacts();
+                    }).then(function() {
+                        blockUiLoader.unblockUi();
+                        return apiContact;
+                    });
+                }
+            } else blockUiLoader.unblockUi();
         },
         deleteContact: function (id) {
             var self = this;

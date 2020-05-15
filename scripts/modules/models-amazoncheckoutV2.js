@@ -189,7 +189,7 @@ define([
                             body: null,
                             tokenId: response.id
                         }).then(function(details) {
-                            window.console.log(details);
+                            // window.console.log(details);
                             if (details.error) {
                                 me.onCheckoutError(details.error.message);
                                 return;

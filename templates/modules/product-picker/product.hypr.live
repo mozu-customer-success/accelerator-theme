@@ -11,8 +11,8 @@
         <div id="product-detail" class="mz-productdetail mz-l-stack">
             {% if model.content.productShortDescription and themeSettings.showProductDetailShortDesc %}
             <div class="mz-productdetail-shortdesc mz-l-stack-section">
-                <h4 class="mz-l-stack-sectiontitle">{{ labels.shortDesc }}</h4>
-                <span itemscope="description">{{ model.content.productShortDescription|safe }}</span>
+                <div class="mz-l-stack-sectiontitle">{{ labels.shortDesc }}</div>
+                <h2 itemprop="description" itemscope>{{ model.content.productShortDescription|safe }}</h2>
             </div>
             {% endif %} {% if model.options and model.options.length > 0 %}
             <div class="mz-productdetail-options mz-l-stack-section">
@@ -45,7 +45,7 @@
                       <span class="mz-validationmessage" data-mz-validationmessage-for="quantity"></span>
                     </div>
                     <div class="mz-productdetail-conversion-buttons">
-                        <button id="add-to-cart" class="mz-productdetail-addtocart mz-button mz-button-large {% if not model.isPurchasable %}is-disabled{% endif %}"
+                        <button id="add-to-cart" class="mz-productdetail-addtocart mz-button mz-button-large{% if not model.isPurchasable %} is-disabled{% endif %}"
                             {% if not model.isPurchasable %} disabled="disabled" {% endif %} data-mz-action="completeProductConfiguration">
                             {{ labels.addItem }}
                         </button>
@@ -69,8 +69,8 @@
             {% endif %}
 
             <div class="mz-productdetail-fulldesc mz-l-stack-section">
-                <h4 class="mz-l-stack-sectiontitle">{{ labels.fullDesc }}</h4>
-                {{ model.content.productFullDescription|safe }}
+                <div class="mz-l-stack-sectiontitle">{{ labels.fullDesc }}</div>
+                <h3>{{ model.content.productFullDescription|safe }}</h3>
             </div>
 
             {% if model.productUsage == 'Bundle' %}

@@ -2,8 +2,8 @@
             <label for="coupon-code">{{ labels.couponCode }}: </label>
         </div>
         <div class="mz-l-formfieldgroup-cell">
-            <input type="text" id="coupon-code" name="coupon-code" value="{{ model.couponCode }}" data-mz-value="couponCode">
-            <button type="button" id="cart-coupon-code" class="mz-button" data-mz-action="addCoupon" {% if not model.couponCode %} disabled="disabled" {% endif %}>{{ labels.apply }}</button>
+            <input type="text" id="coupon-code" name="coupon-code" value="{{ model.couponCode }}" data-mz-value="couponCode" maxlength="{{themeSettings.couponCodeLength}}">
+            <button type="button" id="cart-coupon-code" class="mz-button" data-mz-action="addCoupon" {% if not model.couponCode %} disabled="disabled" {% endif %} title="Apply Coupon" aria-label="Apply Coupon">{{ labels.apply }}</button>
         </div>
         {% if model.tentativeCoupon %}
         <div>

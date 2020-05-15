@@ -1,11 +1,82 @@
-﻿<footer class="mz-pagefooter">
-    {% dropzone "footer" scope="site" %}
-    <div class="mz-pagefooter-copyright" id="copyright">
-        <span class="mz-pagefooter-copyrighttext">
-            &copy; {% now "Y" %} {{ siteContext.generalSettings.websiteName }}. {{ labels.allRightsReserved }}
-        </span> 
-        <span class="mz-pagefooter-poweredby">
-             {{ labels.poweredBy }}
-        </span>
-    </div>
+﻿<div class="mz-pagefooter ml-global-footer">
+	<div class="container">
+		<div class="row">
+			<div class="col-xs-12">
+				{% dropzone "footer" scope="site" %}
+			</div>
+		</div>
+	</div>
+</div>
+<footer>
+	<div class="container">
+		<div class="row">
+			<div class="col-xs-12 col-sm-4 pull-right">
+				<div>
+					{% dropzone "email-signup-tag-line" scope="site" %}
+				</div>
+
+				<div>
+					<form class="form">
+					  <div class="form-group">
+					  	<button type="submit" class="secondary-btn ml-footer-email-signup-button">submit</button>
+					  	<div class="email-container">
+					    	<input type="email" class="form-control" id="exampleInputEmail3" placeholder="Your Email Address" maxlength="{{themeSettings.emailLength}}">
+					    </div>
+					  </div>
+						<div id="footerStoreLocator">
+							{% include "modules/location/store-locator-footer" %}
+						</div>
+					</form>					
+				</div>
+				<div class="social-links">
+					<div class="ml-footer-social-connect">Connect with us:</div>
+					<div>
+						<a title="Facebook" href="https://facebook.com" class="ml-icon ml-social-icon ml-icon-facebook" aria-label="Facebook link"></a>
+						<a title="Twitter" href="https://twitter.com" class="ml-icon ml-social-icon ml-icon-twitter" aria-label="Twitter link"></a>
+						<a title="Pintrest" href="https://pinterest.com" class="ml-icon ml-social-icon ml-icon-pintrest" aria-label="Pinterest link"></a>
+						<a title="Google" href="https://google.com" class="ml-icon ml-social-icon ml-icon-google" aria-label="Google link"></a>
+						<a title="Instagram" href="https://instagram.com" class="ml-icon ml-social-icon ml-icon-instagram" aria-label="Instagram link"></a>
+						<a title="YouTube" href="https://youtube.com" class="ml-icon ml-social-icon ml-icon-youtube" aria-label="YouTube link"></a>
+					</div>
+				</div>
+				<div class="ml-footer-phone-number">
+					{% dropzone "ml-footer-phone-number" scope="site" %}
+				</div>
+			</div>
+			<div class="col-xs-12 col-sm-8 regular-footer {% if themeSettings.footerEnableMini %}mini-footer-on{% else %}mini-footer-off{% endif %}">
+				<div class="row">
+					<div class="col-xs-12 col-sm-6">
+						<div class="row">
+							<div class="col-xs-6">
+								{% dropzone "footer-cat-links-col1" scope="site" %}
+							</div>
+							<div class="col-xs-6">
+								{% dropzone "footer-cat-links-col2" scope="site" %}
+							</div>
+						</div>
+					</div>	
+					<div class="col-xs-12 col-sm-6">
+						<div class="row">
+							<div class="col-xs-6 top-pad">
+								{% dropzone "footer-cat-links-col3" scope="site" %}
+							</div>
+							<div class="col-xs-6 top-pad">
+								{% dropzone "footer-cat-links-col4" scope="site" %}
+							</div>
+						</div>
+					</div>								
+				</div>
+
+			</div>		
+		</div>
+		<div class="row">
+			<div class="col-xs-12 {% if themeSettings.footerEnableMini %}mini-footer-on{% else %}mini-footer-off{% endif %}">
+				<div class="row">
+					<div class="col-xs-12">
+						{% dropzone "mini-footer-cat-links" scope="site" %}
+					</div>
+				</div>
+			</div>			
+		</div>
+	</div>
 </footer>

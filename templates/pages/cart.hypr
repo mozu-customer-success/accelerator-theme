@@ -1,0 +1,46 @@
+﻿{% extends "page" %}
+
+{% block title-tag-content %}{% firstof pageContext.metaTitle labels.cart %} - {% parent %}{% endblock title-tag-content %}
+
+{% block head-tag-scripts %}
+{% parent %}
+{% if siteContext.checkoutSettings.visaCheckout.isEnabled and not pageContext.isEditMode and not pageContext.isAdminMode %}
+{% include "modules/common/anti-clickjacking-script" %}
+{% endif %}
+{% endblock head-tag-scripts %}
+
+{% block body-tag-classes %} mz-cart {% endblock body-tag-classes %}
+
+{% block site-nav %}{% endblock site-nav %}
+
+{% block body-content %}
+
+{% require_script "pages/cart" %}
+
+{% preload_json model "cart" %}
+<div class="modal fade" id="mz-location-selector">
+	{% include "modules/cart/cart-location-select" %}
+</div>
+<div class="mz-l-container">
+	<div id="mz-discount-threshold-messages">
+		{% include "modules/cart/cart-discount-threshold-messages" with model=model %}
+	</div>
+	<h1 class="mz-pagetitle">{{ labels.cart }}</h1>
+	<form method="post" action="{{ siteContext.secureHost }}{{siteContext.siteSubdirectory}}/cart/checkout" id="cartform">
+		{% dropzone "cart-top" scope="template" %}
+		<input type="hidden" name="id" value="{{model.id}}" />
+        {% include "modules/common/message-bar" with model=model.messages %}
+        <table class="mz-table mz-table-cart" id="cart">
+            {% include "modules/cart/cart-table" %}
+		</table>
+		
+		 {% block modal-dialog %}
+			<div mz-modal-discount-dialog class="mz-discount-modal">
+				<div id="mzModalDialog" data-backdrop="static" class="modal fade" tabindex="-1" role="dialog">
+					{% include "modules/cart/discount-modal/discount-modal" %} 
+				</div>
+			</div>
+		{% endblock modal-dialog %}
+	</form>
+</div>
+{% endblock body-content %}

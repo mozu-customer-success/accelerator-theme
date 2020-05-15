@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+
+var fs = require('fs');
+var path = require('path');
+var minimist = require('minimist');
+var getActionDefs = require('../utils/get-action-defs');
+
+var opts = minimist(process.argv.slice(2));
+
+opts.out = opts.out || "./action-definitions.json";
+opts.url = opts.url || getActionDefs.LATEST_DEFS_URL;
+
+console.log('Downloading latest action definitions...');
+
+getActionDefs(opts).then(function(defs) {
+  fs.writeFile(opts.out, JSON.stringify(defs, null, 2), 'utf-8', function(e) {
+    if (e) throw new Error("Writing " + opts.out + " failed: " + e);
+    console.log("Writing " + opts.out + " succeeded!\n");
+  }) 
+}).catch(function(e) {
+  console.error(e);
+  process.exit(1);
+});
